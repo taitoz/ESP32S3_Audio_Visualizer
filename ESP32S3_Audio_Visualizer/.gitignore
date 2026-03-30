@@ -1,0 +1,14 @@
+# Build artifacts
+build/
+.pio/
+.vscode/
+*.o
+*.elf
+*.bin
+*.map
+
+# IDE
+*.swp
+*.swo
+*~
+.DS_Store
