@@ -2,13 +2,13 @@
 #include <math.h>
 
 /*******************************************************************************
- * VU Meter — multiple visualization styles with ballistic smoothing
+ * VU Meter — Stereo, multiple visualization styles with ballistic smoothing
  ******************************************************************************/
 
-static float smoothedRMS  = 0.0f;
-static float smoothedPeak = 0.0f;
-static float currentDB    = -60.0f;
-static float peakDB       = -60.0f;
+static float smoothedRMS[2]  = {0.0f, 0.0f};
+static float smoothedPeak[2] = {0.0f, 0.0f};
+static float currentDB[2]    = {-60.0f, -60.0f};
+static float peakDB[2]       = {-60.0f, -60.0f};
 
 // Convert linear amplitude to dB (referenced to ADC_CENTER)
 static float toDB(float amplitude)
@@ -18,41 +18,48 @@ static float toDB(float amplitude)
     return 20.0f * log10f(amplitude / 2048.0f);
 }
 
+// Apply VU ballistics to one channel
+static void update_channel(int ch, float rms, float peak)
+{
+    if (rms > smoothedRMS[ch]) {
+        smoothedRMS[ch] = smoothedRMS[ch] + VU_ATTACK_COEFF * (rms - smoothedRMS[ch]);
+    } else {
+        smoothedRMS[ch] = smoothedRMS[ch] + VU_RELEASE_COEFF * (rms - smoothedRMS[ch]);
+    }
+
+    if (peak > smoothedPeak[ch]) {
+        smoothedPeak[ch] = peak;
+    } else {
+        smoothedPeak[ch] = smoothedPeak[ch] * 0.95f;
+    }
+
+    currentDB[ch] = toDB(smoothedRMS[ch]);
+    peakDB[ch]    = toDB(smoothedPeak[ch]);
+
+    if (currentDB[ch] < -60.0f) currentDB[ch] = -60.0f;
+    if (currentDB[ch] > 3.0f)   currentDB[ch] = 3.0f;
+    if (peakDB[ch] < -60.0f)    peakDB[ch] = -60.0f;
+    if (peakDB[ch] > 3.0f)      peakDB[ch] = 3.0f;
+}
+
 void vu_meter_init()
 {
-    smoothedRMS  = 0.0f;
-    smoothedPeak = 0.0f;
-    currentDB    = -60.0f;
-    peakDB       = -60.0f;
+    for (int ch = 0; ch < 2; ch++) {
+        smoothedRMS[ch]  = 0.0f;
+        smoothedPeak[ch] = 0.0f;
+        currentDB[ch]    = -60.0f;
+        peakDB[ch]       = -60.0f;
+    }
 }
 
-void vu_meter_update(float rms, float peak)
+void vu_meter_update(float rmsL, float peakL, float rmsR, float peakR)
 {
-    // VU ballistics: fast attack, slow release
-    if (rms > smoothedRMS) {
-        smoothedRMS = smoothedRMS + VU_ATTACK_COEFF * (rms - smoothedRMS);
-    } else {
-        smoothedRMS = smoothedRMS + VU_RELEASE_COEFF * (rms - smoothedRMS);
-    }
-
-    if (peak > smoothedPeak) {
-        smoothedPeak = peak;
-    } else {
-        smoothedPeak = smoothedPeak * 0.95f;  // peak decay
-    }
-
-    currentDB = toDB(smoothedRMS);
-    peakDB    = toDB(smoothedPeak);
-
-    // Clamp
-    if (currentDB < -60.0f) currentDB = -60.0f;
-    if (currentDB > 3.0f)   currentDB = 3.0f;
-    if (peakDB < -60.0f)    peakDB = -60.0f;
-    if (peakDB > 3.0f)      peakDB = 3.0f;
+    update_channel(CH_LEFT,  rmsL, peakL);
+    update_channel(CH_RIGHT, rmsR, peakR);
 }
 
-float vu_get_db()      { return currentDB; }
-float vu_get_peak_db() { return peakDB; }
+float vu_get_db(int ch)      { return currentDB[ch]; }
+float vu_get_peak_db(int ch) { return peakDB[ch]; }
 
 // ─── Helper: map dB to 0.0–1.0 range ────────────────────────────────────────
 static float dbToNorm(float db)
@@ -73,7 +80,7 @@ static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b)
 // ─── STYLE 1: Classic Needle VU Meter ───────────────────────────────────────
 void vu_meter_draw_needle(TFT_eSprite &spr)
 {
-    // Draw two meters side by side (L and R, but both show mono for now)
+    // Draw two meters side by side (L and R — true stereo)
     int meterW = SCREEN_WIDTH / 2 - 20;
     int meterH = SCREEN_HEIGHT - 20;
     int cx1 = SCREEN_WIDTH / 4;
@@ -117,8 +124,9 @@ void vu_meter_draw_needle(TFT_eSprite &spr)
             spr.drawString(labels[l], lx, ly, 1);
         }
 
-        // Draw needle
-        float norm = dbToNorm(currentDB);
+        // Draw needle — use this meter's channel dB
+        float chDB = currentDB[m];
+        float norm = dbToNorm(chDB);
         float angle = PI * 0.2f + norm * PI * 0.6f;
         int nx = cx + (int)(cosf(PI - angle) * (radius - 2));
         int ny = cy - (int)(sinf(PI - angle) * (radius - 2));
@@ -144,21 +152,21 @@ void vu_meter_draw_led_ladder(TFT_eSprite &spr)
     int segH        = 50;
     int gap         = 2;
     int startX      = 20;
-    int barY1       = 30;       // top bar (RMS)
-    int barY2       = 100;      // bottom bar (Peak)
+    int barY1       = 30;       // top bar (Left channel)
+    int barY2       = 100;      // bottom bar (Right channel)
 
-    float normRMS  = dbToNorm(currentDB);
-    float normPeak = dbToNorm(peakDB);
-    int litRMS  = (int)(normRMS * numSegs);
-    int litPeak = (int)(normPeak * numSegs);
+    float normL  = dbToNorm(currentDB[CH_LEFT]);
+    float normR  = dbToNorm(currentDB[CH_RIGHT]);
+    int litL  = (int)(normL * numSegs);
+    int litR  = (int)(normR * numSegs);
 
-    // Title
+    // Labels
     spr.setTextColor(TFT_CYAN, TFT_BLACK);
     spr.setTextDatum(TL_DATUM);
-    spr.drawString("RMS", 2, barY1 + 15, 2);
+    spr.drawString("L", 2, barY1 + 15, 2);
 
     spr.setTextColor(TFT_YELLOW, TFT_BLACK);
-    spr.drawString("PEAK", 2, barY2 + 15, 2);
+    spr.drawString("R", 2, barY2 + 15, 2);
 
     for (int i = 0; i < numSegs; i++) {
         int x = startX + i * segW;
@@ -176,12 +184,12 @@ void vu_meter_draw_led_ladder(TFT_eSprite &spr)
 
         uint16_t offColor = rgb565(20, 20, 20);
 
-        // RMS bar
-        uint16_t col = (i < litRMS) ? onColor : offColor;
+        // Left channel bar
+        uint16_t col = (i < litL) ? onColor : offColor;
         spr.fillRect(x, barY1, segW - gap, segH, col);
 
-        // Peak bar
-        col = (i < litPeak) ? onColor : offColor;
+        // Right channel bar
+        col = (i < litR) ? onColor : offColor;
         spr.fillRect(x, barY2, segW - gap, segH, col);
     }
 
@@ -189,9 +197,9 @@ void vu_meter_draw_led_ladder(TFT_eSprite &spr)
     spr.setTextColor(TFT_WHITE, TFT_BLACK);
     spr.setTextDatum(TR_DATUM);
     char buf[16];
-    snprintf(buf, sizeof(buf), "%.1f dB", currentDB);
+    snprintf(buf, sizeof(buf), "%.1f dB", currentDB[CH_LEFT]);
     spr.drawString(buf, SCREEN_WIDTH - 5, barY1 + 15, 2);
-    snprintf(buf, sizeof(buf), "%.1f dB", peakDB);
+    snprintf(buf, sizeof(buf), "%.1f dB", currentDB[CH_RIGHT]);
     spr.drawString(buf, SCREEN_WIDTH - 5, barY2 + 15, 2);
 
     spr.setTextColor(TFT_CYAN, TFT_BLACK);
@@ -263,8 +271,9 @@ void vu_meter_draw_retro(TFT_eSprite &spr)
             spr.drawPixel(rx, ry, redZone);
         }
 
-        // Needle
-        float norm = dbToNorm(currentDB);
+        // Needle — use this meter's channel dB
+        float chDB_retro = currentDB[m];
+        float norm = dbToNorm(chDB_retro);
         float angle = PI * 0.25f + norm * PI * 0.5f;
         int nx = cx + (int)(cosf(PI - angle) * radius);
         int ny = pivotY - (int)(sinf(PI - angle) * radius);

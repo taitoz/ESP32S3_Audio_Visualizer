@@ -51,11 +51,24 @@
 #define AXS_GET_POINT_Y(buf,point_index) (((uint16_t)(buf[AXS_TOUCH_ONE_POINT_LEN*point_index+AXS_TOUCH_Y_H_POS] & 0x0F) <<8) + (uint16_t)buf[AXS_TOUCH_ONE_POINT_LEN*point_index+AXS_TOUCH_Y_L_POS])
 #define AXS_GET_POINT_EVENT(buf,point_index) (buf[AXS_TOUCH_ONE_POINT_LEN*point_index+AXS_TOUCH_EVENT_POS] >> 6)
 
-// ─── Audio ADC Input ────────────────────────────────────────────────────────
-// Connect audio transformer secondary to this pin with bias resistor network
-// Bias: 2x 100k resistors from 3.3V and GND to pin, 100nF coupling cap from transformer
-#define AUDIO_ADC_PIN          3   // GPIO3 = ADC1_CH2 (safe with BLE)
-#define AUDIO_ADC_CHANNEL      ADC1_CHANNEL_2
+// ─── Audio ADC Input (Stereo) ───────────────────────────────────────────────
+// Two channels via audio transformers, each with its own bias network:
+//   Transformer secondary → 100nF cap → GPIO pin
+//   Bias: 2x 100k resistors from 3.3V and GND to pin (sets DC midpoint ~1.65V)
+//
+//   LEFT channel:  Audio Transformer L → 100nF → GPIO3
+//                                                  ├─ 100k → 3.3V
+//                                                  └─ 100k → GND
+//
+//   RIGHT channel: Audio Transformer R → 100nF → GPIO4
+//                                                  ├─ 100k → 3.3V
+//                                                  └─ 100k → GND
+//
+#define AUDIO_ADC_PIN_L        3   // GPIO3 = ADC1_CH2 — Left channel
+#define AUDIO_ADC_CHANNEL_L    ADC1_CHANNEL_2
+#define AUDIO_ADC_PIN_R        4   // GPIO4 = ADC1_CH3 — Right channel
+#define AUDIO_ADC_CHANNEL_R    ADC1_CHANNEL_3
+#define AUDIO_NUM_CHANNELS     2
 
 // ─── AK4493 DAC (SPI Control) ──────────────────────────────────────────────
 // Uses HSPI (SPI3) — separate from display QSPI (SPI2)

@@ -3,45 +3,45 @@
 #include "pins_config.h"
 
 /*******************************************************************************
- * FFT processing and bar-style spectrum visualization
+ * FFT processing and bar-style spectrum visualization (Stereo)
+ * 
+ * Layout: L channel bars grow DOWN from center, R channel bars grow UP from center
+ * This creates a mirrored stereo spectrum display across the 640px width.
  ******************************************************************************/
 
-float bandValues[NUM_BANDS]    = {0};
-float peakValues[NUM_BANDS]    = {0};
-int   peakHoldCount[NUM_BANDS] = {0};
+float bandValuesL[NUM_BANDS]    = {0};
+float peakValuesL[NUM_BANDS]    = {0};
+float bandValuesR[NUM_BANDS]    = {0};
+float peakValuesR[NUM_BANDS]    = {0};
 
-static float bandSmoothed[NUM_BANDS] = {0};
+static int   peakHoldCountL[NUM_BANDS] = {0};
+static int   peakHoldCountR[NUM_BANDS] = {0};
+static float bandSmoothedL[NUM_BANDS]  = {0};
+static float bandSmoothedR[NUM_BANDS]  = {0};
 
-// ArduinoFFT object — operates on the global vReal/vImag arrays
-static ArduinoFFT<double> FFT(vReal, vImag, SAMPLES, SAMPLING_FREQ);
+// Two ArduinoFFT objects — one per channel
+static ArduinoFFT<double> FFT_L(vRealL, vImagL, SAMPLES, SAMPLING_FREQ);
+static ArduinoFFT<double> FFT_R(vRealR, vImagR, SAMPLES, SAMPLING_FREQ);
 
 void spectrum_init()
 {
     for (int i = 0; i < NUM_BANDS; i++) {
-        bandValues[i]    = 0;
-        bandSmoothed[i]  = 0;
-        peakValues[i]    = 0;
-        peakHoldCount[i] = 0;
+        bandValuesL[i]    = 0;  bandValuesR[i]    = 0;
+        bandSmoothedL[i]  = 0;  bandSmoothedR[i]  = 0;
+        peakValuesL[i]    = 0;  peakValuesR[i]    = 0;
+        peakHoldCountL[i] = 0;  peakHoldCountR[i] = 0;
     }
 }
 
-void spectrum_compute_fft()
+// Process one channel's FFT bins into band values
+static void process_bands(double *vReal, float *bandValues, float *bandSmoothed,
+                          float *peakValues, int *peakHoldCount, int halfH)
 {
-    // Apply Hamming window, then FFT, then compute magnitudes
-    FFT.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
-    FFT.compute(FFT_FORWARD);
-    FFT.complexToMagnitude();
-
-    // Map FFT bins to NUM_BANDS using logarithmic frequency distribution
-    // Frequency per bin = SAMPLING_FREQ / SAMPLES ≈ 21.5 Hz per bin
-    // Usable bins: 1 .. SAMPLES/2-1  (skip DC bin 0)
     float newBands[NUM_BANDS] = {0};
     int   bandCounts[NUM_BANDS] = {0};
-
-    int maxBin = SAMPLES / 2;
+    int   maxBin = SAMPLES / 2;
 
     for (int i = 1; i < maxBin; i++) {
-        // Log-scale mapping: bin i → band index
         float freq = (float)i * SAMPLING_FREQ / SAMPLES;
         float minFreq = 30.0f;
         float maxFreq = (float)(SAMPLING_FREQ / 2);
@@ -49,7 +49,6 @@ void spectrum_compute_fft()
         if (freq < minFreq) continue;
         if (freq > maxFreq) break;
 
-        // Logarithmic mapping
         float logMin = log10f(minFreq);
         float logMax = log10f(maxFreq);
         float logF   = log10f(freq);
@@ -61,17 +60,16 @@ void spectrum_compute_fft()
         bandCounts[band]++;
     }
 
-    // Average and smooth
     for (int i = 0; i < NUM_BANDS; i++) {
         float val = 0;
         if (bandCounts[i] > 0) {
             val = newBands[i] / bandCounts[i];
         }
 
-        // Scale to displayable range (0–SCREEN_HEIGHT)
+        // Scale to half-screen height (each channel gets half)
         // Adjust the divisor to calibrate sensitivity for your input signal
         val = val / 300.0f;
-        if (val > SCREEN_HEIGHT) val = SCREEN_HEIGHT;
+        if (val > halfH) val = halfH;
 
         // Exponential smoothing
         bandSmoothed[i] = bandSmoothed[i] * BAND_SMOOTHING + val * (1.0f - BAND_SMOOTHING);
@@ -92,18 +90,33 @@ void spectrum_compute_fft()
     }
 }
 
-// Color gradient: green → yellow → red based on height
+void spectrum_compute_fft()
+{
+    int halfH = SCREEN_HEIGHT / 2;
+
+    // Left channel FFT
+    FFT_L.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+    FFT_L.compute(FFT_FORWARD);
+    FFT_L.complexToMagnitude();
+    process_bands(vRealL, bandValuesL, bandSmoothedL, peakValuesL, peakHoldCountL, halfH);
+
+    // Right channel FFT
+    FFT_R.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+    FFT_R.compute(FFT_FORWARD);
+    FFT_R.complexToMagnitude();
+    process_bands(vRealR, bandValuesR, bandSmoothedR, peakValuesR, peakHoldCountR, halfH);
+}
+
+// Color gradient: green → yellow → red based on height ratio
 static uint16_t barColor(int y, int maxH)
 {
     float ratio = (float)y / (float)maxH;
     if (ratio < 0.5f) {
-        // Green to Yellow
         uint8_t r = (uint8_t)(ratio * 2.0f * 255);
         uint8_t g = 255;
         uint8_t b = 0;
         return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
     } else {
-        // Yellow to Red
         uint8_t r = 255;
         uint8_t g = (uint8_t)((1.0f - (ratio - 0.5f) * 2.0f) * 255);
         uint8_t b = 0;
@@ -113,29 +126,55 @@ static uint16_t barColor(int y, int maxH)
 
 void spectrum_draw_bars(TFT_eSprite &spr)
 {
+    int centerY = SCREEN_HEIGHT / 2;
+    int halfH   = SCREEN_HEIGHT / 2;
     int barWidth = (SCREEN_WIDTH - 2) / NUM_BANDS;
-    int gap = 2;  // pixels between bars
+    int gap = 2;
     int effectiveBar = barWidth - gap;
     if (effectiveBar < 1) effectiveBar = 1;
-
     int startX = (SCREEN_WIDTH - (barWidth * NUM_BANDS)) / 2;
+
+    // Center line
+    spr.drawFastHLine(0, centerY, SCREEN_WIDTH, 0x2945);
 
     for (int i = 0; i < NUM_BANDS; i++) {
         int x = startX + i * barWidth;
-        int barH = (int)bandValues[i];
-        if (barH < 0) barH = 0;
-        if (barH > SCREEN_HEIGHT) barH = SCREEN_HEIGHT;
 
-        // Draw filled bar from bottom up with gradient
-        for (int y = 0; y < barH; y++) {
-            uint16_t col = barColor(y, SCREEN_HEIGHT);
-            spr.drawFastHLine(x, SCREEN_HEIGHT - 1 - y, effectiveBar, col);
+        // ── Left channel: bars grow UPWARD from center ──
+        int barHL = (int)bandValuesL[i];
+        if (barHL < 0) barHL = 0;
+        if (barHL > halfH) barHL = halfH;
+
+        for (int y = 0; y < barHL; y++) {
+            uint16_t col = barColor(y, halfH);
+            spr.drawFastHLine(x, centerY - 1 - y, effectiveBar, col);
         }
 
-        // Draw peak dot
-        int peakY = (int)peakValues[i];
-        if (peakY > 0 && peakY < SCREEN_HEIGHT) {
-            spr.drawFastHLine(x, SCREEN_HEIGHT - 1 - peakY, effectiveBar, TFT_WHITE);
+        int peakYL = (int)peakValuesL[i];
+        if (peakYL > 0 && peakYL < halfH) {
+            spr.drawFastHLine(x, centerY - 1 - peakYL, effectiveBar, TFT_WHITE);
+        }
+
+        // ── Right channel: bars grow DOWNWARD from center ──
+        int barHR = (int)bandValuesR[i];
+        if (barHR < 0) barHR = 0;
+        if (barHR > halfH) barHR = halfH;
+
+        for (int y = 0; y < barHR; y++) {
+            uint16_t col = barColor(y, halfH);
+            spr.drawFastHLine(x, centerY + 1 + y, effectiveBar, col);
+        }
+
+        int peakYR = (int)peakValuesR[i];
+        if (peakYR > 0 && peakYR < halfH) {
+            spr.drawFastHLine(x, centerY + 1 + peakYR, effectiveBar, TFT_WHITE);
         }
     }
+
+    // Channel labels
+    spr.setTextColor(TFT_CYAN, TFT_BLACK);
+    spr.setTextDatum(TL_DATUM);
+    spr.drawString("L", 2, 2, 1);
+    spr.setTextDatum(BL_DATUM);
+    spr.drawString("R", 2, SCREEN_HEIGHT - 2, 1);
 }

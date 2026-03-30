@@ -3,12 +3,12 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include "pins_config.h"
+#include "audio_sampling.h"
 
 /*******************************************************************************
- * VU Meter Visualizations — multiple styles, touch-switchable
+ * VU Meter Visualizations — Stereo (L + R), multiple styles, touch-switchable
  * 
- * All draw functions expect dB level in range roughly -60..0 dB
- * and RMS/peak values from audio_sampling module.
+ * All draw functions use per-channel dB levels in range roughly -60..+3 dB
  ******************************************************************************/
 
 // VU meter ballistics
@@ -24,11 +24,11 @@ enum VUStyle {
 };
 
 void vu_meter_init();
-void vu_meter_update(float rms, float peak);  // call each frame with raw RMS and peak
+void vu_meter_update(float rmsL, float peakL, float rmsR, float peakR);  // stereo update
 void vu_meter_draw_needle(TFT_eSprite &spr);
 void vu_meter_draw_led_ladder(TFT_eSprite &spr);
 void vu_meter_draw_retro(TFT_eSprite &spr);
 void vu_meter_draw(TFT_eSprite &spr, VUStyle style);  // dispatch to correct style
 
-float vu_get_db();       // current smoothed dB level
-float vu_get_peak_db();  // current peak dB level
+float vu_get_db(int ch);       // current smoothed dB level (CH_LEFT or CH_RIGHT)
+float vu_get_peak_db(int ch);  // current peak dB level (CH_LEFT or CH_RIGHT)

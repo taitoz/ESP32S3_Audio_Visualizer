@@ -15,9 +15,9 @@
  *   Partition Scheme: 16M Flash (3MB APP / 9.9MB FATFS)
  *   PSRAM: OPI PSRAM
  * 
- * Audio Input:
- *   Audio transformer secondary → 100nF coupling cap → GPIO3 (ADC1_CH2)
- *   Bias: 2x 100k resistors (3.3V → pin ← GND) to set DC midpoint at ~1.65V
+ * Audio Input (Stereo):
+ *   LEFT:  Audio transformer → 100nF → GPIO3 (ADC1_CH2) + bias 2x100k
+ *   RIGHT: Audio transformer → 100nF → GPIO4 (ADC1_CH3) + bias 2x100k
  * 
  * Based on nikthefix's TFT_eSPI driver for AXS15231B QSPI display.
  ******************************************************************************/
@@ -161,7 +161,7 @@ void setup()
     sprite.drawString("ESP32-S3 AUDIO VISUALIZER", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 - 20, 2);
     sprite.setTextColor(TFT_DARKGREY, TFT_BLACK);
     sprite.drawString("Touch screen to change mode", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 10, 1);
-    sprite.drawString("ADC input on GPIO3 via audio transformer", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 25, 1);
+    sprite.drawString("Stereo ADC: L=GPIO3  R=GPIO4", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 25, 1);
     lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
     delay(2000);
 
@@ -193,11 +193,13 @@ void loop()
     if (audio_sampling_is_ready()) {
         audio_sampling_consume();
 
-        float rms  = audio_get_rms();
-        float peak = audio_get_peak();
+        float rmsL  = audio_get_rms(CH_LEFT);
+        float peakL = audio_get_peak(CH_LEFT);
+        float rmsR  = audio_get_rms(CH_RIGHT);
+        float peakR = audio_get_peak(CH_RIGHT);
 
-        // Update VU meter ballistics
-        vu_meter_update(rms, peak);
+        // Update VU meter ballistics (stereo)
+        vu_meter_update(rmsL, peakL, rmsR, peakR);
 
         // Run FFT for spectrum mode (always compute so switching is seamless)
         spectrum_compute_fft();

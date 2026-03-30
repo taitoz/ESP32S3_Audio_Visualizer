@@ -5,18 +5,20 @@
 #include "audio_sampling.h"
 
 /*******************************************************************************
- * FFT Spectrum Analyzer — processes vReal/vImag and produces frequency bands
+ * FFT Spectrum Analyzer — Stereo (L + R), processes vRealL/R and produces
+ * frequency bands per channel
  ******************************************************************************/
 
-#define NUM_BANDS          32        // number of frequency bands displayed
+#define NUM_BANDS          32        // number of frequency bands per channel
 #define BAND_SMOOTHING     0.7f      // exponential smoothing factor (0=instant, 1=frozen)
 #define PEAK_FALL_RATE     0.5f      // peak dot fall speed per frame
 #define PEAK_HOLD_FRAMES   15        // frames to hold peak before falling
 
-extern float bandValues[NUM_BANDS];       // current magnitude per band (smoothed)
-extern float peakValues[NUM_BANDS];       // peak hold per band
-extern int   peakHoldCount[NUM_BANDS];    // frames remaining for peak hold
+extern float bandValuesL[NUM_BANDS];      // Left channel magnitude per band (smoothed)
+extern float peakValuesL[NUM_BANDS];      // Left channel peak hold per band
+extern float bandValuesR[NUM_BANDS];      // Right channel magnitude per band (smoothed)
+extern float peakValuesR[NUM_BANDS];      // Right channel peak hold per band
 
 void spectrum_init();
-void spectrum_compute_fft();              // run FFT on vReal/vImag, populate bandValues
-void spectrum_draw_bars(TFT_eSprite &spr); // draw bar-style spectrum analyzer
+void spectrum_compute_fft();              // run FFT on both L and R channels
+void spectrum_draw_bars(TFT_eSprite &spr); // draw stereo bar-style spectrum analyzer
