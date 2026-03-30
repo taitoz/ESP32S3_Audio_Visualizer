@@ -19,6 +19,7 @@
 #define ADC_RESOLUTION     12         // ESP32-S3 ADC is 12-bit
 #define ADC_MAX_VALUE      4095
 #define ADC_CENTER         2048       // DC midpoint with bias network
+#define NOISE_GATE_RMS     30.0f      // RMS below this → silence (handles floating pins & ADC noise)
 
 // Channel indices
 #define CH_LEFT  0
@@ -27,10 +28,10 @@
 // Double-buffer per channel: one fills while the other is processed
 extern volatile bool bufferReady;
 extern volatile int  activeBuffer;
-extern double        vRealL[SAMPLES];  // Left channel FFT input
-extern double        vImagL[SAMPLES];
-extern double        vRealR[SAMPLES];  // Right channel FFT input
-extern double        vImagR[SAMPLES];
+extern float         vRealL[SAMPLES];  // Left channel FFT input
+extern float         vImagL[SAMPLES];
+extern float         vRealR[SAMPLES];  // Right channel FFT input
+extern float         vImagR[SAMPLES];
 extern int16_t       sampleBufferL[2][SAMPLES];
 extern int16_t       sampleBufferR[2][SAMPLES];
 

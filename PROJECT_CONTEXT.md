@@ -136,14 +136,15 @@ ESP32S3_Audio_Visualizer.ino     Main sketch — setup(), loop(), touch handling
 ESP32S3_Audio_Visualizer.ino     Main sketch — FreeRTOS task creation, setup
   ├── pins_config.h              Hardware pin definitions
   ├── AXS15231B.cpp/.h           Display driver
-  ├── audio_sampling.cpp/.h      ADC double-buffer
-  ├── spectrum.cpp/.h            FFT + spectrum bars
-  ├── vu_meter.cpp/.h            VU meter styles
+  ├── audio_sampling.cpp/.h      ADC double-buffer (float, dynamic DC removal)
+  ├── spectrum.cpp/.h            FFT (float) + spectrum bars
+  ├── vu_meter.cpp/.h            VU meter styles (Needle, LED Ladder)
+  ├── serial_cmd.cpp/.h          JSON command handler over USB CDC Serial
+  ├── settings.cpp/.h            NVS persistence for all configuration
+  ├── settings.html              Standalone Web Serial UI (opened locally in browser)
   ├── ak4493.cpp/.h              AK4493 SPI driver (register read/write, volume, filter)
   ├── ble_gearvr.cpp/.h          BLE client — scan, connect, parse Gear VR packets
-  ├── usb_hid.cpp/.h             USB HID mouse + keyboard output
-  ├── ui_manager.cpp/.h          Multi-page UI, swipe navigation, touch routing
-  └── settings.cpp/.h            NVS persistence for all configuration
+  └── usb_hid.cpp/.h             USB HID mouse + keyboard output
 ```
 
 ### 3.3 Memory Budget
@@ -152,41 +153,46 @@ ESP32S3_Audio_Visualizer.ino     Main sketch — FreeRTOS task creation, setup
 |----------|-------|-----------|
 | Sprite buffer (PSRAM) | 640x180x2 = 230 KB | 8 MB PSRAM |
 | Rotation buffer (PSRAM) | 230 KB | shared from PSRAM |
-| FFT buffers (vReal, vImag) | 1024x8x2 = 16 KB | DRAM |
+| FFT buffers (vReal, vImag) | 1024x4x4 = 16 KB (float) | DRAM |
 | Sample double-buffer | 1024x2x2 = 4 KB | DRAM |
 | BLE stack | ~40 KB (NimBLE) | DRAM |
 | USB HID | ~5 KB | DRAM |
 | Free DRAM (estimated) | ~200 KB+ | 512 KB total |
 | Free PSRAM (estimated) | ~7.5 MB | 8 MB total |
 
-### 3.4 FreeRTOS Task Plan (Phase 6)
+### 3.4 FreeRTOS Task Plan [IMPLEMENTED]
 
-| Task | Core | Priority | Responsibility |
-|------|------|----------|----------------|
-| Audio + Display | Core 1 | High | ADC sampling (via timer ISR), FFT, visualization, display push |
-| BLE + USB HID | Core 0 | Medium | BLE scanning/connection, Gear VR packet parsing, USB HID reports |
-| Touch UI | Core 0 | Low | Touch polling, page navigation, settings changes |
+| Task | Core | Priority | Stack | Responsibility |
+|------|------|----------|-------|----------------|
+| Audio + Display | Core 1 | 2 (High) | 8 KB | ADC consume, FFT (conditional), VU update, visualization, display push |
+| Touch + Serial | Core 0 | 1 (Med) | 4 KB | Touch polling at ~50 Hz, serial command processing, mode cycling |
+| BLE + USB HID | Core 0 | 1 (Med) | 4 KB | (Future) BLE scanning, Gear VR packets, USB HID reports |
 
-**Why dual-core**: BLE radio operations can cause timing jitter. Keeping audio/display on Core 1 and BLE on Core 0 prevents BLE from disrupting the sampling timer or display refresh.
+**Why dual-core**: Touch I2C polling and serial command processing on Core 0 cannot stall the audio/display pipeline on Core 1. FFT is only computed in spectrum mode (skipped for VU modes). No WiFi used — settings via USB CDC Serial + Web Serial API.
 
 ---
 
 ## 4. Implementation Phases — Detailed
 
-### Phase 1: Spectrum Analyzer + VU Meters [DONE]
+### Phase 1: Spectrum Analyzer + VU Meters + Dual-Core [DONE]
 
 **Completed**:
-- [x] `audio_sampling.cpp/.h` — esp_timer ADC at 22050 Hz, double-buffer, RMS/peak
-- [x] `spectrum.cpp/.h` — arduinoFFT with Hamming window, 32-band log-scale, peak hold with decay
-- [x] `vu_meter.cpp/.h` — 3 styles: Needle (dual analog), LED Ladder (40-seg RMS+Peak), Retro Analog (warm palette)
-- [x] Touch mode cycling in main .ino
+- [x] `audio_sampling.cpp/.h` — esp_timer ADC at 22050 Hz, double-buffer, dynamic DC removal, noise gate
+- [x] `spectrum.cpp/.h` — ArduinoFFT<float> with Hamming window, 32-band log-scale, peak hold with decay
+- [x] `vu_meter.cpp/.h` — 2 styles: Needle (dual analog), LED Ladder (40-seg RMS+Peak)
+- [x] Touch mode cycling with millis()-based debounce
 - [x] FPS counter overlay
 - [x] Full pin map in `pins_config.h` including future AK4493 SPI pins
+- [x] Dual-core FreeRTOS: Audio+Display on Core 1, Touch on Core 0
+- [x] Float FFT (not double) for ESP32-S3 performance (~10 FPS)
+- [x] Conditional FFT — only computed in spectrum mode, skipped for VU modes
+- [x] Optimized display rotation loop (pointer arithmetic, no multiply-per-pixel)
 
-**Tuning Notes** (for when testing on hardware):
-- `spectrum.cpp` line `val = val / 300.0f` — adjust this divisor based on actual signal amplitude from transformer
+**Tuning Notes**:
+- `spectrum.cpp` line `val = val / 300.0f` — adjust divisor based on actual signal amplitude from transformer
 - `BAND_SMOOTHING` (0.7) — increase for smoother bars, decrease for more responsive
-- `VU_ATTACK_COEFF` (0.3) / `VU_RELEASE_COEFF` (0.05) — classic VU spec is 300ms attack to 99%
+- `VU_ATTACK_COEFF` (0.3) / `VU_RELEASE_COEFF` (0.5) — fast attack, fast release matched to spectrum
+- `NOISE_GATE_RMS` (30.0f) — squelch threshold for floating pins / ADC noise
 - If ADC is noisy, consider increasing `SAMPLES` to 2048 (costs more CPU but better frequency resolution)
 
 ---
@@ -290,25 +296,35 @@ ESP32S3_Audio_Visualizer.ino     Main sketch — FreeRTOS task creation, setup
 
 ---
 
-### Phase 5: Multi-page Touch UI + NVS Settings
+### Phase 5: Settings UI via USB Serial + Web Serial API [DONE]
 
-**Files to create**: `ui_manager.cpp`, `ui_manager.h`, `settings.cpp`, `settings.h`
+**Files created**: `serial_cmd.cpp`, `serial_cmd.h`, `settings.cpp`, `settings.h`, `settings.html`
 
-**Pages**:
+**Architecture**: No WiFi used. The ESP32-S3 USB CDC serial (already enabled for debug output) carries bidirectional JSON commands. A standalone `settings.html` file (opened locally in Chrome/Edge) uses the Web Serial API to connect to the ESP32 COM port and provide a full settings UI.
 
-| Page | Content | Navigation |
-|------|---------|------------|
-| **Main** | Spectrum / VU visualizations | Tap = cycle viz mode |
-| **DAC** | AK4493 volume, filter, sound mode, mute | Swipe from right edge |
-| **BLE** | Gear VR connection status, pair/unpair | Swipe from left edge |
-| **Settings** | Brightness, ADC sensitivity, mouse sensitivity, about | Long-press |
+**How it works**:
+1. User opens `settings.html` in Chrome or Edge (local file, no server needed)
+2. Clicks "Connect COM Port" → browser shows serial port picker
+3. Selects the ESP32-S3 USB CDC port
+4. HTML page sends/receives JSON commands at 115200 baud
+5. ESP32 pushes status updates every 2 seconds automatically
 
-**UI Framework**:
-- Page stack with swipe gesture detection (track touch X delta)
-- Swipe threshold: ~50px horizontal movement
-- Transition animation: slide left/right (shift sprite content)
-- Each page has its own `draw(TFT_eSprite &spr)` and `handleTouch(int x, int y)` methods
-- Small page indicator dots at bottom of screen
+**Serial Protocol** (one JSON object per line, `\n` terminated):
+```
+PC → ESP32:  {"cmd":"get"}                          → request full status
+PC → ESP32:  {"cmd":"set","brightness":128}         → update setting(s)
+PC → ESP32:  {"cmd":"restart"}                      → restart device
+ESP32 → PC:  {"status":true,"fps":10.2,...}          → periodic push / response
+```
+
+**Web UI Sections** (in settings.html):
+
+| Section | Controls |
+|---------|----------|
+| **Visualization** | Mode selector (Spectrum / VU Needle / VU LED), ADC sensitivity slider |
+| **Display** | Brightness slider (PWM), live FPS display |
+| **DAC (AK4493)** | Volume L/R sliders, filter mode selector, mute toggle |
+| **System** | Free heap, uptime, restart button, serial log |
 
 **NVS Settings** (ESP32 Preferences library):
 ```
@@ -326,50 +342,53 @@ namespace "config":
   ble_bonded_addr (string)   — last paired Gear VR MAC address
 ```
 
+**Key benefits**: No WiFi stack (∼40 KB RAM saved), no external libraries (ESPAsyncWebServer/AsyncTCP not needed), zero radio interference with BLE, settings UI works via existing USB cable. Only requires ArduinoJson.
+
 ---
 
-### Phase 6: Dual-core FreeRTOS Task Architecture
+### Phase 6: Dual-core FreeRTOS Task Architecture [DONE]
 
-**Refactoring goal**: Move from single-threaded `loop()` to FreeRTOS tasks for better real-time performance.
+**Implemented** in Phase 1. Current task layout:
 
-**Task layout**:
 ```cpp
-// Core 1 — Audio & Display (time-critical)
+// Core 1 — Audio & Display (time-critical, priority 2)
 void audioDisplayTask(void *param) {
-    while(1) {
+    for (;;) {
         if (audio_sampling_is_ready()) {
-            audio_sampling_consume();
-            spectrum_compute_fft();
-            vu_meter_update(rms, peak);
+            audio_sampling_consume();       // dynamic DC removal
+            vu_meter_update(rms, peak);     // always update VU ballistics
+            if (currentMode == VIS_SPECTRUM)
+                spectrum_compute_fft();     // conditional — skip for VU modes
+            drawFrame();
         }
-        drawFrame();
-        vTaskDelay(1);  // yield briefly
+        vTaskDelay(1);
     }
 }
 
-// Core 0 — BLE & USB HID  
+// Core 0 — Touch + Serial Commands (priority 1)
+void touchTask(void *param) {
+    for (;;) {
+        // I2C touch polling with millis() debounce
+        // writes volatile currentMode on tap
+        serial_cmd_poll();              // process JSON commands from USB CDC
+        vTaskDelay(pdMS_TO_TICKS(20));  // ~50 Hz
+    }
+}
+
+// Core 0 — BLE + USB HID (future, priority 1)
 void bleHidTask(void *param) {
-    while(1) {
-        ble_gearvr_poll();       // check connection, parse packets
-        usb_hid_send_report();   // send queued HID reports
-        vTaskDelay(10);          // ~100 Hz polling
-    }
-}
-
-// Core 0 — Touch & UI (lower priority)
-void touchUiTask(void *param) {
-    while(1) {
-        ui_manager_poll_touch();
-        ui_manager_handle_navigation();
-        vTaskDelay(20);  // ~50 Hz is fine for touch
+    for (;;) {
+        ble_gearvr_poll();
+        usb_hid_send_report();
+        vTaskDelay(10);  // ~100 Hz
     }
 }
 ```
 
 **Shared data protection**:
-- Mutex for AK4493 SPI (if accessed from UI task and other contexts)
-- Mutex for I2C bus (touch controller — only accessed from touch task, so likely not needed)
-- Atomic/volatile for visualization mode variable (written by touch task, read by display task)
+- `volatile VisMode currentMode` — written by touch/serial task (Core 0), read by display task (Core 1)
+- Settings struct — written by serial command handler (Core 0), read by display task (Core 1); all fields volatile
+- Mutex for AK4493 SPI (if accessed from serial commands and other contexts)
 - Queue for BLE→HID data passing
 
 ---
@@ -388,6 +407,10 @@ void touchUiTask(void *param) {
 | 8 | 22,050 Hz sample rate | Nyquist at 11 kHz covers speech and music visualization; higher rates waste CPU for visual-only use |
 | 9 | 1024-sample FFT | Good balance of frequency resolution (~21 Hz/bin) and update rate (~21 FPS max) |
 | 10 | esp_timer for ADC sampling | More precise than loop-based timing; timer callback runs in IRAM for consistency |
+| 11 | Float FFT (not double) | ESP32-S3 has no hardware double FPU; float is ~2x faster |
+| 12 | Dynamic DC removal (not hardcoded 2048) | Handles floating pins, missing bias network, any DC offset |
+| 13 | USB Serial + Web Serial API for settings (not WiFi) | No WiFi stack needed (~40 KB RAM saved); no radio interference with BLE; works via existing USB cable; Chrome/Edge Web Serial API provides rich browser UI from a local HTML file |
+| 14 | ArduinoJson for serial protocol | Lightweight, well-tested JSON parsing; single library dependency for settings UI |
 
 ---
 
@@ -416,4 +439,4 @@ void touchUiTask(void *param) {
 
 ---
 
-*Last updated: Phase 1 complete. Next: Phase 2 (AK4493 SPI driver).*
+*Last updated: Phase 1 + Phase 5 + Phase 6 complete. Dual-core FreeRTOS, float FFT, dynamic DC removal, 2 VU styles, WebSerial settings UI. Next: Phase 2 (AK4493 SPI driver).*

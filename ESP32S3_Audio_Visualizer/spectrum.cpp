@@ -19,9 +19,9 @@ static int   peakHoldCountR[NUM_BANDS] = {0};
 static float bandSmoothedL[NUM_BANDS]  = {0};
 static float bandSmoothedR[NUM_BANDS]  = {0};
 
-// Two ArduinoFFT objects — one per channel
-static ArduinoFFT<double> FFT_L(vRealL, vImagL, SAMPLES, SAMPLING_FREQ);
-static ArduinoFFT<double> FFT_R(vRealR, vImagR, SAMPLES, SAMPLING_FREQ);
+// Two ArduinoFFT objects — one per channel (float for ESP32-S3 performance)
+static ArduinoFFT<float> FFT_L(vRealL, vImagL, SAMPLES, SAMPLING_FREQ);
+static ArduinoFFT<float> FFT_R(vRealR, vImagR, SAMPLES, SAMPLING_FREQ);
 
 void spectrum_init()
 {
@@ -34,7 +34,7 @@ void spectrum_init()
 }
 
 // Process one channel's FFT bins into band values
-static void process_bands(double *vReal, float *bandValues, float *bandSmoothed,
+static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
                           float *peakValues, int *peakHoldCount, int halfH)
 {
     float newBands[NUM_BANDS] = {0};

@@ -65,9 +65,9 @@
 //                                                  └─ 100k → GND
 //
 #define AUDIO_ADC_PIN_L        3   // GPIO3 = ADC1_CH2 — Left channel
-#define AUDIO_ADC_CHANNEL_L    ADC1_CHANNEL_2
+#define AUDIO_ADC_CHANNEL_L    ADC_CHANNEL_2
 #define AUDIO_ADC_PIN_R        4   // GPIO4 = ADC1_CH3 — Right channel
-#define AUDIO_ADC_CHANNEL_R    ADC1_CHANNEL_3
+#define AUDIO_ADC_CHANNEL_R    ADC_CHANNEL_3
 #define AUDIO_NUM_CHANNELS     2
 
 // ─── AK4493 DAC (SPI Control) ──────────────────────────────────────────────

@@ -13,13 +13,12 @@
 
 // VU meter ballistics
 #define VU_ATTACK_COEFF    0.3f    // fast attack
-#define VU_RELEASE_COEFF   0.05f   // slow release (classic VU behavior)
+#define VU_RELEASE_COEFF   0.5f    // fast release (2x spectrum-matched fall rate)
 
 // Style identifiers
 enum VUStyle {
     VU_STYLE_NEEDLE = 0,    // Classic analog needle meter
     VU_STYLE_LED_LADDER,    // Horizontal segmented LED bar
-    VU_STYLE_RETRO,         // Retro analog dual-meter with glow
     VU_STYLE_COUNT          // sentinel — number of styles
 };
 
@@ -27,7 +26,6 @@ void vu_meter_init();
 void vu_meter_update(float rmsL, float peakL, float rmsR, float peakR);  // stereo update
 void vu_meter_draw_needle(TFT_eSprite &spr);
 void vu_meter_draw_led_ladder(TFT_eSprite &spr);
-void vu_meter_draw_retro(TFT_eSprite &spr);
 void vu_meter_draw(TFT_eSprite &spr, VUStyle style);  // dispatch to correct style
 
 float vu_get_db(int ch);       // current smoothed dB level (CH_LEFT or CH_RIGHT)

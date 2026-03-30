@@ -11,10 +11,10 @@ volatile bool bufferReady = false;
 volatile int  activeBuffer = 0;
 int16_t       sampleBufferL[2][SAMPLES];
 int16_t       sampleBufferR[2][SAMPLES];
-double        vRealL[SAMPLES];
-double        vImagL[SAMPLES];
-double        vRealR[SAMPLES];
-double        vImagR[SAMPLES];
+float         vRealL[SAMPLES];
+float         vImagL[SAMPLES];
+float         vRealR[SAMPLES];
+float         vImagR[SAMPLES];
 
 static volatile uint16_t sampleIndex = 0;
 static esp_timer_handle_t samplingTimer = NULL;
@@ -29,8 +29,8 @@ static void IRAM_ATTR sampling_timer_cb(void* arg)
     adc_oneshot_read(adc_handle, AUDIO_ADC_CHANNEL_L, &rawL);
     adc_oneshot_read(adc_handle, AUDIO_ADC_CHANNEL_R, &rawR);
 
-    sampleBufferL[activeBuffer][sampleIndex] = (int16_t)(rawL - ADC_CENTER);
-    sampleBufferR[activeBuffer][sampleIndex] = (int16_t)(rawR - ADC_CENTER);
+    sampleBufferL[activeBuffer][sampleIndex] = (int16_t)rawL;
+    sampleBufferR[activeBuffer][sampleIndex] = (int16_t)rawR;
     sampleIndex++;
 
     if (sampleIndex >= SAMPLES) {
@@ -87,32 +87,47 @@ bool audio_sampling_is_ready()
 void audio_sampling_consume()
 {
     int readBuf = activeBuffer ^ 1;  // the buffer that just finished filling
+
+    // Compute actual DC mean per channel (handles floating pins, missing bias, etc.)
+    float sumL = 0.0f, sumR = 0.0f;
     for (int i = 0; i < SAMPLES; i++) {
-        vRealL[i] = (double)sampleBufferL[readBuf][i];
-        vImagL[i] = 0.0;
-        vRealR[i] = (double)sampleBufferR[readBuf][i];
-        vImagR[i] = 0.0;
+        sumL += (float)sampleBufferL[readBuf][i];
+        sumR += (float)sampleBufferR[readBuf][i];
+    }
+    float dcL = sumL / SAMPLES;
+    float dcR = sumR / SAMPLES;
+
+    for (int i = 0; i < SAMPLES; i++) {
+        vRealL[i] = (float)sampleBufferL[readBuf][i] - dcL;
+        vImagL[i] = 0.0f;
+        vRealR[i] = (float)sampleBufferR[readBuf][i] - dcR;
+        vImagR[i] = 0.0f;
     }
     bufferReady = false;
 }
 
 float audio_get_rms(int ch)
 {
-    double *v = (ch == CH_LEFT) ? vRealL : vRealR;
-    double sum = 0;
+    float *v = (ch == CH_LEFT) ? vRealL : vRealR;
+    float sum = 0.0f;
     for (int i = 0; i < SAMPLES; i++) {
         sum += v[i] * v[i];
     }
-    return sqrt(sum / SAMPLES);
+    float rms = sqrtf(sum / SAMPLES);
+    // Noise gate: treat low-level ADC noise / floating pins as silence
+    if (rms < NOISE_GATE_RMS) rms = 0.0f;
+    return rms;
 }
 
 float audio_get_peak(int ch)
 {
-    double *v = (ch == CH_LEFT) ? vRealL : vRealR;
-    double peak = 0;
+    float *v = (ch == CH_LEFT) ? vRealL : vRealR;
+    float peak = 0.0f;
     for (int i = 0; i < SAMPLES; i++) {
-        double a = fabs(v[i]);
+        float a = fabsf(v[i]);
         if (a > peak) peak = a;
     }
-    return (float)peak;
+    // Noise gate: consistent with RMS threshold
+    if (peak < NOISE_GATE_RMS) peak = 0.0f;
+    return peak;
 }

@@ -3,10 +3,14 @@
  * 
  * Features:
  *   - Spectrum Analyzer (FFT from GPIO ADC via audio transformer)
- *   - VU Meters with multiple styles (Needle, LED Ladder, Retro Analog)
+ *   - VU Meters with multiple styles (Needle, LED Ladder)
  *   - Touch to cycle visualization modes
  *   - AK4493 DAC control via SPI (Phase 3 — stub included)
  *   - BLE Gear VR controller + USB HID mouse (Phase 4/5 — future)
+ * 
+ * Architecture:
+ *   Core 1 — Audio sampling (timer ISR), FFT, VU update, display rendering
+ *   Core 0 — Touch polling + UI interaction
  * 
  * Hardware:
  *   Board:  ESP32-S3-Dev (LilyGo T-Display-S3-Long)
@@ -29,6 +33,8 @@
 #include "audio_sampling.h"
 #include "spectrum.h"
 #include "vu_meter.h"
+#include "settings.h"
+#include "serial_cmd.h"
 
 // ─── Display & Sprite ───────────────────────────────────────────────────────
 TFT_eSPI tft = TFT_eSPI();
@@ -38,24 +44,27 @@ TFT_eSprite sprite = TFT_eSprite(&tft);
 uint8_t ALS_ADDRESS = 0x3B;
 uint8_t read_touchpad_cmd[11] = {0xb5, 0xab, 0xa5, 0x5a, 0x0, 0x0, 0x0, 0x8};
 bool    touch_held = false;
-#define TOUCH_TIMEOUT_RESET 30000
-uint16_t touch_timeout = 0;
+#define TOUCH_DEBOUNCE_MS   300   // ignore repeated touches for 300ms after a tap
+unsigned long touch_released_at = 0;
 
-// ─── Visualization Mode ─────────────────────────────────────────────────────
+// ─── Visualization Mode (volatile — written by Core 0, read by Core 1) ─────
 enum VisMode {
     VIS_SPECTRUM = 0,
     VIS_VU_NEEDLE,
     VIS_VU_LED_LADDER,
-    VIS_VU_RETRO,
     VIS_MODE_COUNT
 };
 
-VisMode currentMode = VIS_SPECTRUM;
+volatile VisMode currentMode = VIS_SPECTRUM;
 
 // ─── FPS counter ────────────────────────────────────────────────────────────
 unsigned long frameCount = 0;
 unsigned long lastFpsTime = 0;
-float fps = 0;
+volatile float fps = 0;
+
+// ─── FreeRTOS task handles ──────────────────────────────────────────────────
+TaskHandle_t audioDisplayTaskHandle = NULL;
+TaskHandle_t touchTaskHandle = NULL;
 
 // ─── Touch Detection ────────────────────────────────────────────────────────
 bool checkTouch()
@@ -67,6 +76,10 @@ bool checkTouch()
     Wire.requestFrom(ALS_ADDRESS, (uint8_t)8);
     while (!Wire.available());
     Wire.readBytes(buff, 8);
+
+    // Must have at least 1 touch point — otherwise it's not a real touch
+    uint8_t pointNum = AXS_GET_POINT_NUM(buff);
+    if (pointNum == 0) return false;
 
     int pointX = AXS_GET_POINT_X(buff, 0);
     int pointY = AXS_GET_POINT_Y(buff, 0);
@@ -87,6 +100,7 @@ bool checkTouch()
 void cycleMode()
 {
     currentMode = (VisMode)((currentMode + 1) % VIS_MODE_COUNT);
+    settings.viz_mode = (uint8_t)currentMode;
 }
 
 // ─── Draw Frame ─────────────────────────────────────────────────────────────
@@ -94,7 +108,8 @@ void drawFrame()
 {
     sprite.fillSprite(TFT_BLACK);
 
-    switch (currentMode) {
+    VisMode mode = currentMode;  // snapshot volatile once per frame
+    switch (mode) {
         case VIS_SPECTRUM:
             spectrum_draw_bars(sprite);
             break;
@@ -104,9 +119,6 @@ void drawFrame()
         case VIS_VU_LED_LADDER:
             vu_meter_draw(sprite, VU_STYLE_LED_LADDER);
             break;
-        case VIS_VU_RETRO:
-            vu_meter_draw(sprite, VU_STYLE_RETRO);
-            break;
         default:
             spectrum_draw_bars(sprite);
             break;
@@ -115,8 +127,8 @@ void drawFrame()
     // Mode indicator at bottom-right
     sprite.setTextColor(TFT_DARKGREY, TFT_BLACK);
     sprite.setTextDatum(BR_DATUM);
-    const char* modeNames[] = {"SPECTRUM", "VU NEEDLE", "VU LED", "VU RETRO"};
-    sprite.drawString(modeNames[currentMode], SCREEN_WIDTH - 5, SCREEN_HEIGHT - 2, 1);
+    const char* modeNames[] = {"SPECTRUM", "VU NEEDLE", "VU LED"};
+    sprite.drawString(modeNames[mode], SCREEN_WIDTH - 5, SCREEN_HEIGHT - 2, 1);
 
     // FPS at bottom-left
     sprite.setTextDatum(BL_DATUM);
@@ -126,6 +138,77 @@ void drawFrame()
 
     // Push to display (software-rotated 90°)
     lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
+}
+
+// ─── Core 1 Task: Audio + FFT + Display ─────────────────────────────────────
+void audioDisplayTask(void *param)
+{
+    lastFpsTime = millis();
+
+    for (;;) {
+        // Sync viz mode from serial UI (settings.viz_mode may be changed by serial handler on Core 0)
+        VisMode serialMode = (VisMode)settings.viz_mode;
+        if (serialMode < VIS_MODE_COUNT && serialMode != currentMode) {
+            currentMode = serialMode;
+        }
+
+        if (audio_sampling_is_ready()) {
+            audio_sampling_consume();
+
+            float rmsL  = audio_get_rms(CH_LEFT);
+            float peakL = audio_get_peak(CH_LEFT);
+            float rmsR  = audio_get_rms(CH_RIGHT);
+            float peakR = audio_get_peak(CH_RIGHT);
+
+            // Update VU meter ballistics (stereo)
+            vu_meter_update(rmsL, peakL, rmsR, peakR);
+
+            // Only run FFT when needed (it's the most expensive computation)
+            if (currentMode == VIS_SPECTRUM) {
+                spectrum_compute_fft();
+            }
+
+            // Draw current visualization
+            drawFrame();
+
+            // FPS calculation
+            frameCount++;
+            unsigned long now = millis();
+            if (now - lastFpsTime >= 1000) {
+                fps = (float)frameCount * 1000.0f / (float)(now - lastFpsTime);
+                frameCount = 0;
+                lastFpsTime = now;
+            }
+        }
+        vTaskDelay(1);  // yield briefly to avoid WDT
+    }
+}
+
+// ─── Core 0 Task: Touch Polling ─────────────────────────────────────────────
+void touchTask(void *param)
+{
+    for (;;) {
+        // Touch handling
+        if (digitalRead(TOUCH_INT) == LOW) {
+            if (!touch_held && (millis() - touch_released_at >= TOUCH_DEBOUNCE_MS)) {
+                if (checkTouch()) {
+                    cycleMode();
+                    Serial.printf("Mode: %d\n", (int)currentMode);
+                }
+            }
+            touch_held = true;
+        } else {
+            if (touch_held) {
+                touch_released_at = millis();
+            }
+            touch_held = false;
+        }
+
+        // Process serial commands from Web Serial UI
+        serial_cmd_poll();
+
+        vTaskDelay(pdMS_TO_TICKS(20));  // ~50 Hz touch + serial polling
+    }
 }
 
 // ─── Setup ──────────────────────────────────────────────────────────────────
@@ -142,17 +225,28 @@ void setup()
     digitalWrite(TOUCH_RES, HIGH); delay(2);
     Wire.begin(TOUCH_IICSDA, TOUCH_IICSCL);
 
+    // Settings init (load from NVS)
+    settings_init();
+
     // Display init
     sprite.createSprite(SCREEN_WIDTH, SCREEN_HEIGHT);  // full screen landscape sprite in PSRAM
     sprite.setSwapBytes(1);
     pinMode(TFT_BL, OUTPUT);
-    digitalWrite(TFT_BL, HIGH);
+    analogWrite(TFT_BL, settings.brightness);
     axs15231_init();
 
     // Audio sampling init
     audio_sampling_init();
     spectrum_init();
     vu_meter_init();
+
+    // Restore saved viz mode
+    if (settings.viz_mode < VIS_MODE_COUNT) {
+        currentMode = (VisMode)settings.viz_mode;
+    }
+
+    // Serial command handler init
+    serial_cmd_init();
 
     // Show splash
     sprite.fillSprite(TFT_BLACK);
@@ -161,59 +255,19 @@ void setup()
     sprite.drawString("ESP32-S3 AUDIO VISUALIZER", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 - 20, 2);
     sprite.setTextColor(TFT_DARKGREY, TFT_BLACK);
     sprite.drawString("Touch screen to change mode", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 10, 1);
-    sprite.drawString("Stereo ADC: L=GPIO3  R=GPIO4", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 25, 1);
+    sprite.drawString("Settings: open settings.html via USB Serial", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 25, 1);
     lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
     delay(2000);
 
-    lastFpsTime = millis();
-    Serial.println("Ready. Touch to cycle: Spectrum → VU Needle → VU LED → VU Retro");
+    // Launch FreeRTOS tasks on separate cores
+    xTaskCreatePinnedToCore(audioDisplayTask, "AudioDisplay", 8192, NULL, 2, &audioDisplayTaskHandle, 1);
+    xTaskCreatePinnedToCore(touchTask, "Touch", 4096, NULL, 1, &touchTaskHandle, 0);
+
+    Serial.println("Ready. Touch to cycle: Spectrum -> VU Needle -> VU LED");
 }
 
-// ─── Loop ───────────────────────────────────────────────────────────────────
+// ─── Loop (unused — work is done in FreeRTOS tasks) ─────────────────────────
 void loop()
 {
-    // ── Touch handling ──
-    if (digitalRead(TOUCH_INT) == LOW) {
-        if (!touch_held) {
-            if (checkTouch()) {
-                cycleMode();
-                Serial.printf("Mode: %d\n", currentMode);
-            }
-        }
-        touch_held = true;
-        touch_timeout = 0;
-    }
-    touch_timeout++;
-    if (touch_timeout >= TOUCH_TIMEOUT_RESET) {
-        touch_held = false;
-        touch_timeout = TOUCH_TIMEOUT_RESET;
-    }
-
-    // ── Audio processing ──
-    if (audio_sampling_is_ready()) {
-        audio_sampling_consume();
-
-        float rmsL  = audio_get_rms(CH_LEFT);
-        float peakL = audio_get_peak(CH_LEFT);
-        float rmsR  = audio_get_rms(CH_RIGHT);
-        float peakR = audio_get_peak(CH_RIGHT);
-
-        // Update VU meter ballistics (stereo)
-        vu_meter_update(rmsL, peakL, rmsR, peakR);
-
-        // Run FFT for spectrum mode (always compute so switching is seamless)
-        spectrum_compute_fft();
-
-        // Draw current visualization
-        drawFrame();
-
-        // FPS calculation
-        frameCount++;
-        unsigned long now = millis();
-        if (now - lastFpsTime >= 1000) {
-            fps = (float)frameCount * 1000.0f / (float)(now - lastFpsTime);
-            frameCount = 0;
-            lastFpsTime = now;
-        }
-    }
+    vTaskDelay(portMAX_DELAY);  // suspend loop task forever
 }

@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Audio Visualizer Settings</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f0f0f;color:#e0e0e0;padding:16px;max-width:480px;margin:0 auto}
+h1{font-size:1.3em;color:#00bcd4;margin-bottom:12px;text-align:center}
+h2{font-size:1em;color:#00bcd4;margin:16px 0 8px;padding-bottom:4px;border-bottom:1px solid #333}
+.card{background:#1a1a1a;border-radius:8px;padding:12px;margin-bottom:10px}
+.row{display:flex;justify-content:space-between;align-items:center;margin:6px 0}
+.row label{font-size:0.85em;color:#aaa}
+.row span{font-size:0.85em;color:#fff;font-weight:600}
+input[type=range]{width:55%;accent-color:#00bcd4;height:20px}
+select{background:#2a2a2a;color:#e0e0e0;border:1px solid #444;border-radius:4px;padding:4px 8px;font-size:0.85em}
+button{background:#00bcd4;color:#000;border:none;border-radius:4px;padding:8px 16px;font-weight:600;cursor:pointer;font-size:0.85em}
+button:active{opacity:0.7}
+button.danger{background:#f44336;color:#fff}
+button.connect{background:#4caf50;color:#fff;font-size:1em;padding:10px 24px;width:100%}
+button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;width:100%}
+.status-bar{font-size:0.8em;color:#666;text-align:center;margin:8px 0;padding:6px;background:#1a1a1a;border-radius:4px}
+.status-bar.connected{color:#4caf50;border:1px solid #4caf50}
+.status-bar.disconnected{color:#f44336;border:1px solid #333}
+.chip{display:inline-block;background:#2a2a2a;border:1px solid #444;border-radius:4px;padding:4px 10px;margin:2px;cursor:pointer;font-size:0.85em}
+.chip.active{background:#00bcd4;color:#000;border-color:#00bcd4;font-weight:600}
+.toggle{position:relative;width:42px;height:22px;display:inline-block}
+.toggle input{display:none}
+.toggle .slider{position:absolute;inset:0;background:#444;border-radius:11px;cursor:pointer;transition:.2s}
+.toggle input:checked+.slider{background:#00bcd4}
+.toggle .slider:before{content:'';position:absolute;width:18px;height:18px;left:2px;bottom:2px;background:#fff;border-radius:50%;transition:.2s}
+.toggle input:checked+.slider:before{transform:translateX(20px)}
+.hidden{display:none}
+#log{background:#111;border:1px solid #333;border-radius:4px;padding:8px;font-family:monospace;font-size:0.75em;color:#888;max-height:120px;overflow-y:auto;margin-top:8px;white-space:pre-wrap;word-break:break-all}
+</style>
+</head>
+<body>
+<h1>&#127925; Audio Visualizer Settings</h1>
+
+<div class="card">
+<div id="connectCard">
+<p style="text-align:center;color:#aaa;font-size:0.85em;margin-bottom:10px">Connect to ESP32-S3 via USB Serial (115200 baud)</p>
+<button class="connect" id="btnConnect" onclick="connectSerial()">&#128268; Connect COM Port</button>
+</div>
+<div id="disconnectCard" class="hidden">
+<button class="disconnect" onclick="disconnectSerial()">&#10005; Disconnect</button>
+</div>
+<div id="statusBar" class="status-bar disconnected">Not connected</div>
+</div>
+
+<div id="controls" class="hidden">
+
+<div class="card">
+<h2>Visualization</h2>
+<div class="row"><label>Mode</label>
+<div id="vizModes">
+<span class="chip" data-v="0" onclick="setViz(0)">Spectrum</span>
+<span class="chip" data-v="1" onclick="setViz(1)">VU Needle</span>
+<span class="chip" data-v="2" onclick="setViz(2)">VU LED</span>
+</div></div>
+<div class="row"><label>ADC Sensitivity</label><span id="sensVal">300</span></div>
+<div class="row"><input type="range" id="sens" min="50" max="2000" step="10" value="300"></div>
+</div>
+
+<div class="card">
+<h2>Display</h2>
+<div class="row"><label>Brightness</label><span id="briVal">255</span></div>
+<div class="row"><input type="range" id="bri" min="0" max="255" value="255"></div>
+<div class="row"><label>FPS</label><span id="fpsVal">--</span></div>
+</div>
+
+<div class="card">
+<h2>DAC (AK4493)</h2>
+<div class="row"><label>Volume L</label><span id="volLVal">0</span></div>
+<div class="row"><input type="range" id="volL" min="0" max="255" value="0"></div>
+<div class="row"><label>Volume R</label><span id="volRVal">0</span></div>
+<div class="row"><input type="range" id="volR" min="0" max="255" value="0"></div>
+<div class="row"><label>Filter</label>
+<select id="dacFilter">
+<option value="0">Sharp roll-off</option>
+<option value="1">Slow roll-off</option>
+<option value="2">Short delay sharp</option>
+<option value="3">Short delay slow</option>
+<option value="4">Super slow</option>
+</select></div>
+<div class="row"><label>Mute</label>
+<label class="toggle"><input type="checkbox" id="dacMute"><span class="slider"></span></label>
+</div>
+</div>
+
+<div class="card">
+<h2>System</h2>
+<div class="row"><label>Free Heap</label><span id="heap">--</span></div>
+<div class="row"><label>Uptime</label><span id="uptime">--</span></div>
+<div class="row" style="justify-content:center;margin-top:8px">
+<button class="danger" onclick="if(confirm('Restart device?'))sendCmd({cmd:'restart'})">Restart</button>
+</div>
+</div>
+
+<div class="card">
+<h2>Serial Log</h2>
+<div id="log"></div>
+</div>
+
+</div>
+
+<script>
+let port = null;
+let reader = null;
+let writer = null;
+let readBuffer = '';
+let ignoreNextUpdate = false;
+
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+
+function log(msg) {
+    const el = $('#log');
+    if (!el) return;
+    el.textContent += msg + '\n';
+    el.scrollTop = el.scrollHeight;
+    // Keep log short
+    const lines = el.textContent.split('\n');
+    if (lines.length > 100) el.textContent = lines.slice(-60).join('\n');
+}
+
+async function connectSerial() {
+    try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+
+        writer = port.writable.getWriter();
+
+        $('#connectCard').classList.add('hidden');
+        $('#disconnectCard').classList.remove('hidden');
+        $('#controls').classList.remove('hidden');
+        $('#statusBar').className = 'status-bar connected';
+        $('#statusBar').textContent = 'Connected';
+        log('Connected to serial port');
+
+        // Request initial status
+        setTimeout(() => sendCmd({cmd:'get'}), 500);
+
+        // Start reading
+        readLoop();
+
+    } catch (e) {
+        log('Connection failed: ' + e.message);
+        $('#statusBar').textContent = 'Failed: ' + e.message;
+    }
+}
+
+async function disconnectSerial() {
+    try {
+        if (reader) { await reader.cancel(); reader.releaseLock(); reader = null; }
+        if (writer) { writer.releaseLock(); writer = null; }
+        if (port) { await port.close(); port = null; }
+    } catch(e) { /* ignore */ }
+
+    $('#connectCard').classList.remove('hidden');
+    $('#disconnectCard').classList.add('hidden');
+    $('#controls').classList.add('hidden');
+    $('#statusBar').className = 'status-bar disconnected';
+    $('#statusBar').textContent = 'Disconnected';
+    log('Disconnected');
+}
+
+async function readLoop() {
+    const decoder = new TextDecoderStream();
+    const inputStream = port.readable.pipeTo(decoder.writable);
+    reader = decoder.readable.getReader();
+
+    try {
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            readBuffer += value;
+
+            // Process complete lines
+            let lines = readBuffer.split('\n');
+            readBuffer = lines.pop(); // keep incomplete line
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+                try {
+                    const data = JSON.parse(trimmed);
+                    handleResponse(data);
+                } catch(e) {
+                    log('< ' + trimmed);
+                }
+            }
+        }
+    } catch (e) {
+        if (e.name !== 'TypeError') log('Read error: ' + e.message);
+    }
+    reader.releaseLock();
+    reader = null;
+}
+
+async function sendCmd(obj) {
+    if (!writer) return;
+    const json = JSON.stringify(obj) + '\n';
+    const encoder = new TextEncoder();
+    try {
+        await writer.write(encoder.encode(json));
+        log('> ' + json.trim());
+    } catch(e) {
+        log('Write error: ' + e.message);
+    }
+}
+
+function handleResponse(data) {
+    if (data.error) {
+        log('Error: ' + data.error);
+        return;
+    }
+    if (data.ready) {
+        log('Device ready');
+        sendCmd({cmd:'get'});
+        return;
+    }
+    // Status update (from get response or periodic push)
+    if (data.status || data.fps !== undefined) {
+        if (ignoreNextUpdate) { ignoreNextUpdate = false; return; }
+        if (data.viz_mode !== undefined) updateVizChips(data.viz_mode);
+        if (data.brightness !== undefined) { $('#bri').value = data.brightness; $('#briVal').textContent = data.brightness; }
+        if (data.adc_sensitivity !== undefined) { $('#sens').value = data.adc_sensitivity; $('#sensVal').textContent = data.adc_sensitivity; }
+        if (data.dac_volume_l !== undefined) { $('#volL').value = data.dac_volume_l; $('#volLVal').textContent = data.dac_volume_l; }
+        if (data.dac_volume_r !== undefined) { $('#volR').value = data.dac_volume_r; $('#volRVal').textContent = data.dac_volume_r; }
+        if (data.dac_filter !== undefined) { $('#dacFilter').value = data.dac_filter; }
+        if (data.dac_mute !== undefined) { $('#dacMute').checked = data.dac_mute; }
+        if (data.fps !== undefined) { $('#fpsVal').textContent = data.fps.toFixed(1); }
+        if (data.free_heap !== undefined) { $('#heap').textContent = (data.free_heap / 1024).toFixed(0) + ' KB'; }
+        if (data.uptime !== undefined) {
+            let s = Math.floor(data.uptime / 1000);
+            let m = Math.floor(s / 60); s %= 60;
+            let h = Math.floor(m / 60); m %= 60;
+            $('#uptime').textContent = h + 'h ' + m + 'm ' + s + 's';
+        }
+    }
+}
+
+function updateVizChips(v) {
+    $$('.chip').forEach(c => { c.classList.toggle('active', c.dataset.v == v); });
+}
+
+function setViz(v) {
+    updateVizChips(v);
+    sendCmd({cmd:'set', viz_mode: v});
+}
+
+// Slider debounce helper
+function onSlider(id, valId, field, isFloat) {
+    let timer = null;
+    $(id).addEventListener('input', e => {
+        const val = isFloat ? parseFloat(e.target.value) : parseInt(e.target.value);
+        $(valId).textContent = val;
+        ignoreNextUpdate = true;
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            const obj = {cmd:'set'};
+            obj[field] = val;
+            sendCmd(obj);
+        }, 150);
+    });
+}
+
+onSlider('#bri', '#briVal', 'brightness', false);
+onSlider('#sens', '#sensVal', 'adc_sensitivity', true);
+onSlider('#volL', '#volLVal', 'dac_volume_l', false);
+onSlider('#volR', '#volRVal', 'dac_volume_r', false);
+
+$('#dacFilter').addEventListener('change', e => {
+    sendCmd({cmd:'set', dac_filter: parseInt(e.target.value)});
+});
+
+$('#dacMute').addEventListener('change', e => {
+    sendCmd({cmd:'set', dac_mute: e.target.checked});
+});
+
+// Check Web Serial API support
+if (!('serial' in navigator)) {
+    $('#statusBar').textContent = 'Web Serial API not supported. Use Chrome/Edge.';
+    $('#statusBar').style.color = '#f44336';
+    $('#btnConnect').disabled = true;
+    $('#btnConnect').style.opacity = '0.3';
+}
+</script>
+</body>
+</html>

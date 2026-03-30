@@ -30,7 +30,7 @@ static void update_channel(int ch, float rms, float peak)
     if (peak > smoothedPeak[ch]) {
         smoothedPeak[ch] = peak;
     } else {
-        smoothedPeak[ch] = smoothedPeak[ch] * 0.95f;
+        smoothedPeak[ch] = smoothedPeak[ch] * 0.6f;
     }
 
     currentDB[ch] = toDB(smoothedRMS[ch]);
@@ -207,106 +207,12 @@ void vu_meter_draw_led_ladder(TFT_eSprite &spr)
     spr.drawString("VU METER - LED LADDER", SCREEN_WIDTH / 2, 2, 1);
 }
 
-// ─── STYLE 3: Retro Analog Dual Meter ──────────────────────────────────────
-void vu_meter_draw_retro(TFT_eSprite &spr)
-{
-    // Warm retro color palette
-    uint16_t bgColor     = rgb565(40, 30, 20);
-    uint16_t faceColor   = rgb565(245, 235, 210);
-    uint16_t needleColor = rgb565(30, 30, 30);
-    uint16_t redZone     = rgb565(200, 50, 50);
-    uint16_t greenZone   = rgb565(50, 150, 50);
-    uint16_t frameColor  = rgb565(120, 90, 50);
-
-    spr.fillSprite(bgColor);
-
-    int meterW = SCREEN_WIDTH / 2 - 30;
-    int meterH = SCREEN_HEIGHT - 30;
-
-    for (int m = 0; m < 2; m++) {
-        int cx = (m == 0) ? SCREEN_WIDTH / 4 : 3 * SCREEN_WIDTH / 4;
-        int ox = cx - meterW / 2;
-        int oy = 15;
-
-        // Meter face
-        spr.fillRoundRect(ox, oy, meterW, meterH, 6, faceColor);
-        spr.drawRoundRect(ox, oy, meterW, meterH, 6, frameColor);
-        spr.drawRoundRect(ox+1, oy+1, meterW-2, meterH-2, 5, frameColor);
-
-        // "VU" label
-        spr.setTextColor(needleColor, faceColor);
-        spr.setTextDatum(TC_DATUM);
-        spr.drawString("VU", cx, oy + 8, 2);
-
-        int pivotY = oy + meterH - 12;
-        int radius = meterH - 30;
-
-        // Draw scale arc — green zone and red zone
-        for (int tick = 0; tick <= 30; tick++) {
-            float angle = PI * 0.25f + (float)tick / 30.0f * PI * 0.5f;
-            float db_here = -60.0f + tick * 2.1f;
-
-            int r1 = radius - 3;
-            int r2 = radius - ((tick % 5 == 0) ? 14 : 8);
-
-            int x1 = cx + (int)(cosf(PI - angle) * r1);
-            int y1 = pivotY - (int)(sinf(PI - angle) * r1);
-            int x2 = cx + (int)(cosf(PI - angle) * r2);
-            int y2 = pivotY - (int)(sinf(PI - angle) * r2);
-
-            uint16_t tc = (db_here > -3.0f) ? redZone : needleColor;
-            spr.drawLine(x1, y1, x2, y2, tc);
-        }
-
-        // Green arc background
-        for (float a = PI * 0.25f; a < PI * 0.65f; a += 0.01f) {
-            int gx = cx + (int)(cosf(PI - a) * (radius + 2));
-            int gy = pivotY - (int)(sinf(PI - a) * (radius + 2));
-            spr.drawPixel(gx, gy, greenZone);
-        }
-        // Red arc for high zone
-        for (float a = PI * 0.65f; a < PI * 0.75f; a += 0.01f) {
-            int rx = cx + (int)(cosf(PI - a) * (radius + 2));
-            int ry = pivotY - (int)(sinf(PI - a) * (radius + 2));
-            spr.drawPixel(rx, ry, redZone);
-        }
-
-        // Needle — use this meter's channel dB
-        float chDB_retro = currentDB[m];
-        float norm = dbToNorm(chDB_retro);
-        float angle = PI * 0.25f + norm * PI * 0.5f;
-        int nx = cx + (int)(cosf(PI - angle) * radius);
-        int ny = pivotY - (int)(sinf(PI - angle) * radius);
-
-        // Needle shadow
-        spr.drawLine(cx+1, pivotY+1, nx+1, ny+1, rgb565(180, 170, 150));
-        // Needle body
-        spr.drawLine(cx, pivotY, nx, ny, needleColor);
-        spr.drawLine(cx-1, pivotY, nx-1, ny, needleColor);
-
-        // Pivot screw
-        spr.fillCircle(cx, pivotY, 5, frameColor);
-        spr.fillCircle(cx, pivotY, 3, rgb565(80, 60, 40));
-
-        // Channel label
-        spr.setTextColor(needleColor, faceColor);
-        spr.setTextDatum(BC_DATUM);
-        spr.drawString((m == 0) ? "LEFT" : "RIGHT", cx, pivotY - radius - 5, 1);
-    }
-
-    // Title at top
-    spr.setTextColor(rgb565(255, 200, 100), bgColor);
-    spr.setTextDatum(TC_DATUM);
-    spr.drawString("VU METER - RETRO ANALOG", SCREEN_WIDTH / 2, 2, 1);
-}
-
 // ─── Dispatch ───────────────────────────────────────────────────────────────
 void vu_meter_draw(TFT_eSprite &spr, VUStyle style)
 {
     switch (style) {
         case VU_STYLE_NEEDLE:     vu_meter_draw_needle(spr);     break;
         case VU_STYLE_LED_LADDER: vu_meter_draw_led_ladder(spr); break;
-        case VU_STYLE_RETRO:      vu_meter_draw_retro(spr);      break;
         default:                  vu_meter_draw_needle(spr);      break;
     }
 }

@@ -351,11 +351,14 @@ void lcd_PushColors_rotated_90(
     uint16_t *q = (uint16_t *)qBuffer;
     uint32_t index = 0;
    
+    // Optimized rotation: precompute row pointers to avoid multiply per pixel
     for (uint16_t j = 0; j < width; j++)
     {
+        uint16_t *src = p + width * (high - 1) + j;  // start at bottom row, column j
         for (uint16_t i = 0; i < high; i++)
         {
-            qBuffer[index++] = ((uint16_t)p[width * (high - i - 1) + j]);             
+            qBuffer[index++] = *src;
+            src -= width;  // move up one row
         }
     }
 
