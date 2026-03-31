@@ -76,7 +76,34 @@ RIGHT:  Audio Transformer R secondary → 100nF cap → GPIO4 (ADC1_CH3)
 - Both channels read on each timer tick (interleaved oneshot reads)
 - Buffer: double-buffer of 1024 int16_t samples per channel, swap on fill
 
-### 2.5 AK4493 DAC — SPI Control
+### 2.5 Ambient Light Sensor (Auto-Brightness)
+
+**Purpose**: Automatically adjust display backlight PWM based on ambient light level.
+
+**Hardware**: Analog light sensor (LDR voltage divider or phototransistor) connected to GPIO5 (ADC1_CH4).
+
+**Circuit examples**:
+```
+Option A — LDR voltage divider:
+  3.3V ─── LDR ───┬─── 10k ─── GND
+                   └── GPIO5
+
+Option B — Phototransistor:
+  3.3V ─── 10k ───┬── GPIO5
+                   └── Phototransistor collector (emitter → GND)
+```
+
+Bright = high ADC value → high PWM. Dark = low ADC value → low PWM.
+If wiring is inverted, swap in software.
+
+**Software**: `light_sensor.cpp/.h`
+- Uses `analogRead()` at 5 Hz (200 ms interval) — low-frequency, no timer needed
+- Exponential moving average (α=0.15) prevents flicker
+- Maps smoothed ADC (0–4095) → PWM range (`brightness_min` – `brightness_max`)
+- Disabled by default; enable via `settings.auto_brightness`
+- When disabled, manual `settings.brightness` applies
+
+### 2.6 AK4493 DAC — SPI Control
 
 **Why SPI (not I2C)**: User preference. AK4493 supports both; SPI avoids bus contention with the touch controller on I2C.
 
@@ -134,6 +161,7 @@ ESP32S3_Audio_Visualizer.ino     Main sketch — FreeRTOS task creation, setup
   ├── vu_meter.cpp/.h            2 VU styles (Needle, LED Ladder) with stereo ballistics
   ├── serial_cmd.cpp/.h          JSON command handler over USB CDC Serial
   ├── settings.cpp/.h            NVS persistence for all configuration
+  ├── light_sensor.cpp/.h        Ambient light ADC → auto backlight PWM
 settings.html                    Standalone Web Serial UI (opened locally in browser)
 .gitignore                       Build artifacts and IDE files
 ```
@@ -350,6 +378,9 @@ ESP32 → PC:  {"status":true,"fps":10.2,...}          → periodic push / respo
 | `dac_mute` | bool | false | Soft mute |
 | `mouse_sens` | float | 1.0 | USB HID mouse sensitivity |
 | `mouse_mode` | uint8_t | 0 | 0=touchpad, 1=gyro |
+| `auto_bri` | bool | false | Enable auto-brightness from light sensor |
+| `bri_min` | uint8_t | 10 | Minimum PWM when dark |
+| `bri_max` | uint8_t | 255 | Maximum PWM when bright |
 
 **Key benefits**: No WiFi stack (~40 KB RAM saved), no external libraries (ESPAsyncWebServer/AsyncTCP not needed), zero radio interference with BLE, settings UI works via existing USB cable. Only requires ArduinoJson.
 
@@ -450,4 +481,4 @@ void bleHidTask(void *param) {
 
 ---
 
-*Last updated: Phase 1 + Phase 5 + Phase 6 complete. Stereo ADC (GPIO3 L, GPIO4 R), dual-core FreeRTOS, float FFT, dynamic DC removal, 2 VU styles, USB Serial + Web Serial API settings UI with NVS persistence. Deprecated WiFi web_server removed. Next: Phase 2 (AK4493 SPI driver).*
+*Last updated: Phase 1 + Phase 5 + Phase 6 complete. Stereo ADC (GPIO3 L, GPIO4 R), ambient light sensor auto-brightness (GPIO5), dual-core FreeRTOS, float FFT, dynamic DC removal, 2 VU styles, USB Serial + Web Serial API settings UI with NVS persistence. Next: Phase 2 (AK4493 SPI driver).*

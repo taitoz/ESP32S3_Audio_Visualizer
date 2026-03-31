@@ -1,6 +1,7 @@
 #include "serial_cmd.h"
 #include "settings.h"
 #include "pins_config.h"
+#include "light_sensor.h"
 #include <ArduinoJson.h>
 
 /*******************************************************************************
@@ -38,6 +39,11 @@ static void send_status()
     doc["dac_mute"]        = (bool)settings.dac_mute;
     doc["mouse_sens"]      = settings.mouse_sens;
     doc["mouse_mode"]      = settings.mouse_mode;
+    doc["auto_brightness"] = (bool)settings.auto_brightness;
+    doc["brightness_min"]  = settings.brightness_min;
+    doc["brightness_max"]  = settings.brightness_max;
+    doc["light_raw"]       = light_sensor_raw();
+    doc["light_bri"]       = light_sensor_brightness();
     doc["fps"]             = fps;
     doc["free_heap"]       = ESP.getFreeHeap();
     doc["uptime"]          = millis();
@@ -81,7 +87,9 @@ static void process_command(const char *line)
         }
         if (doc["brightness"].is<int>()) {
             settings.brightness = doc["brightness"].as<uint8_t>();
-            analogWrite(TFT_BL, settings.brightness);
+            if (!settings.auto_brightness) {
+                analogWrite(TFT_BL, settings.brightness);
+            }
             settings_save_field("brightness");
         }
         if (doc["adc_sensitivity"].is<float>()) {
@@ -115,6 +123,22 @@ static void process_command(const char *line)
         if (doc["mouse_mode"].is<int>()) {
             settings.mouse_mode = doc["mouse_mode"].as<uint8_t>();
             settings_save_field("mouse_mode");
+        }
+        if (doc["auto_brightness"].is<bool>()) {
+            settings.auto_brightness = doc["auto_brightness"].as<bool>();
+            if (!settings.auto_brightness) {
+                // Revert to manual brightness
+                analogWrite(TFT_BL, settings.brightness);
+            }
+            settings_save_field("auto_bri");
+        }
+        if (doc["brightness_min"].is<int>()) {
+            settings.brightness_min = doc["brightness_min"].as<uint8_t>();
+            settings_save_field("bri_min");
+        }
+        if (doc["brightness_max"].is<int>()) {
+            settings.brightness_max = doc["brightness_max"].as<uint8_t>();
+            settings_save_field("bri_max");
         }
 
         // Echo back current state

@@ -21,6 +21,9 @@ void settings_init()
     settings.dac_mute        = false;
     settings.mouse_sens      = 1.0f;
     settings.mouse_mode      = 0;       // touchpad
+    settings.auto_brightness = false;
+    settings.brightness_min  = 10;      // don't go fully dark
+    settings.brightness_max  = 255;
 
     // Load saved values (if they exist)
     prefs.begin("config", true);  // read-only
@@ -34,6 +37,9 @@ void settings_init()
     settings.dac_mute        = prefs.getBool("dac_mute",     settings.dac_mute);
     settings.mouse_sens      = prefs.getFloat("mouse_sens",  settings.mouse_sens);
     settings.mouse_mode      = prefs.getUChar("mouse_mode",  settings.mouse_mode);
+    settings.auto_brightness = prefs.getBool("auto_bri",      settings.auto_brightness);
+    settings.brightness_min  = prefs.getUChar("bri_min",      settings.brightness_min);
+    settings.brightness_max  = prefs.getUChar("bri_max",      settings.brightness_max);
     prefs.end();
 }
 
@@ -50,6 +56,9 @@ void settings_save()
     prefs.putBool("dac_mute",     settings.dac_mute);
     prefs.putFloat("mouse_sens",  settings.mouse_sens);
     prefs.putUChar("mouse_mode",  settings.mouse_mode);
+    prefs.putBool("auto_bri",     settings.auto_brightness);
+    prefs.putUChar("bri_min",     settings.brightness_min);
+    prefs.putUChar("bri_max",     settings.brightness_max);
     prefs.end();
 }
 
@@ -66,5 +75,8 @@ void settings_save_field(const char* field)
     else if (strcmp(field, "dac_mute") == 0)    prefs.putBool("dac_mute",    settings.dac_mute);
     else if (strcmp(field, "mouse_sens") == 0)  prefs.putFloat("mouse_sens", settings.mouse_sens);
     else if (strcmp(field, "mouse_mode") == 0)  prefs.putUChar("mouse_mode", settings.mouse_mode);
+    else if (strcmp(field, "auto_bri") == 0)    prefs.putBool("auto_bri",    settings.auto_brightness);
+    else if (strcmp(field, "bri_min") == 0)     prefs.putUChar("bri_min",    settings.brightness_min);
+    else if (strcmp(field, "bri_max") == 0)     prefs.putUChar("bri_max",    settings.brightness_max);
     prefs.end();
 }

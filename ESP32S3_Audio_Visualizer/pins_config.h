@@ -70,6 +70,15 @@
 #define AUDIO_ADC_CHANNEL_R    ADC_CHANNEL_3
 #define AUDIO_NUM_CHANNELS     2
 
+// ─── Ambient Light Sensor (Analog) ─────────────────────────────────────────
+// Analog light sensor (e.g. LDR voltage divider or phototransistor) for
+// automatic display brightness adjustment.
+//   Sensor output → GPIO5 (ADC1_CH4)
+//   Bright = high ADC value, Dark = low ADC value
+//   (Invert in software if your sensor wiring is opposite)
+#define LIGHT_SENSOR_PIN       5   // GPIO5 = ADC1_CH4
+#define LIGHT_SENSOR_CHANNEL   ADC_CHANNEL_4
+
 // ─── AK4493 DAC (SPI Control) ──────────────────────────────────────────────
 // Uses HSPI (SPI3) — separate from display QSPI (SPI2)
 #define AK4493_SPI_HOST        SPI3_HOST

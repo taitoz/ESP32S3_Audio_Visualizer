@@ -65,8 +65,19 @@ button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;
 
 <div class="card">
 <h2>Display</h2>
-<div class="row"><label>Brightness</label><span id="briVal">255</span></div>
+<div class="row"><label>Manual Brightness</label><span id="briVal">255</span></div>
 <div class="row"><input type="range" id="bri" min="0" max="255" value="255"></div>
+<div class="row"><label>Auto-Brightness</label>
+<label class="toggle"><input type="checkbox" id="autoBri"><span class="slider"></span></label>
+</div>
+<div id="autoBriControls" class="hidden">
+<div class="row"><label>Min Brightness</label><span id="briMinVal">10</span></div>
+<div class="row"><input type="range" id="briMin" min="0" max="255" value="10"></div>
+<div class="row"><label>Max Brightness</label><span id="briMaxVal">255</span></div>
+<div class="row"><input type="range" id="briMax" min="0" max="255" value="255"></div>
+<div class="row"><label>Light Sensor</label><span id="lightRaw">--</span></div>
+<div class="row"><label>Current PWM</label><span id="lightBri">--</span></div>
+</div>
 <div class="row"><label>FPS</label><span id="fpsVal">--</span></div>
 </div>
 
@@ -230,6 +241,14 @@ function handleResponse(data) {
         if (data.dac_volume_r !== undefined) { $('#volR').value = data.dac_volume_r; $('#volRVal').textContent = data.dac_volume_r; }
         if (data.dac_filter !== undefined) { $('#dacFilter').value = data.dac_filter; }
         if (data.dac_mute !== undefined) { $('#dacMute').checked = data.dac_mute; }
+        if (data.auto_brightness !== undefined) {
+            $('#autoBri').checked = data.auto_brightness;
+            $('#autoBriControls').classList.toggle('hidden', !data.auto_brightness);
+        }
+        if (data.brightness_min !== undefined) { $('#briMin').value = data.brightness_min; $('#briMinVal').textContent = data.brightness_min; }
+        if (data.brightness_max !== undefined) { $('#briMax').value = data.brightness_max; $('#briMaxVal').textContent = data.brightness_max; }
+        if (data.light_raw !== undefined) { $('#lightRaw').textContent = data.light_raw; }
+        if (data.light_bri !== undefined) { $('#lightBri').textContent = data.light_bri; }
         if (data.fps !== undefined) { $('#fpsVal').textContent = data.fps.toFixed(1); }
         if (data.free_heap !== undefined) { $('#heap').textContent = (data.free_heap / 1024).toFixed(0) + ' KB'; }
         if (data.uptime !== undefined) {
@@ -278,6 +297,14 @@ $('#dacFilter').addEventListener('change', e => {
 $('#dacMute').addEventListener('change', e => {
     sendCmd({cmd:'set', dac_mute: e.target.checked});
 });
+
+$('#autoBri').addEventListener('change', e => {
+    sendCmd({cmd:'set', auto_brightness: e.target.checked});
+    $('#autoBriControls').classList.toggle('hidden', !e.target.checked);
+});
+
+onSlider('#briMin', '#briMinVal', 'brightness_min', false);
+onSlider('#briMax', '#briMaxVal', 'brightness_max', false);
 
 // Check Web Serial API support
 if (!('serial' in navigator)) {

@@ -20,6 +20,10 @@ struct Settings {
     volatile bool    dac_mute;          // soft mute
     volatile float   mouse_sens;        // USB HID mouse sensitivity
     volatile uint8_t mouse_mode;        // 0=touchpad, 1=gyro
+    // Auto-brightness via ambient light sensor
+    volatile bool    auto_brightness;   // enable auto-brightness adjustment
+    volatile uint8_t brightness_min;    // minimum PWM when dark (0–255)
+    volatile uint8_t brightness_max;    // maximum PWM when bright (0–255)
 };
 
 extern Settings settings;
