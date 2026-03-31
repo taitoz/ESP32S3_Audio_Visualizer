@@ -12,7 +12,7 @@ void settings_init()
 {
     // Defaults
     settings.viz_mode        = 0;       // VIS_SPECTRUM
-    settings.brightness      = 255;     // full brightness
+    settings.brightness      = 128;     // 50% default brightness
     settings.adc_sensitivity = 300.0f;  // spectrum divisor
     settings.dac_volume_l    = 0x00;    // 0 dB
     settings.dac_volume_r    = 0x00;    // 0 dB
@@ -24,6 +24,12 @@ void settings_init()
     settings.auto_brightness = false;
     settings.brightness_min  = 10;      // don't go fully dark
     settings.brightness_max  = 255;
+    settings.light_gain      = 1.0f;
+    settings.band_smoothing  = 0.7f;
+    settings.peak_fall_rate  = 0.5f;
+    settings.peak_hold_frames = 15;
+    settings.vu_attack       = 0.3f;
+    settings.vu_release      = 0.5f;
 
     // Load saved values (if they exist)
     prefs.begin("config", true);  // read-only
@@ -40,6 +46,12 @@ void settings_init()
     settings.auto_brightness = prefs.getBool("auto_bri",      settings.auto_brightness);
     settings.brightness_min  = prefs.getUChar("bri_min",      settings.brightness_min);
     settings.brightness_max  = prefs.getUChar("bri_max",      settings.brightness_max);
+    settings.light_gain      = prefs.getFloat("light_gain",   settings.light_gain);
+    settings.band_smoothing  = prefs.getFloat("band_smooth",  settings.band_smoothing);
+    settings.peak_fall_rate  = prefs.getFloat("peak_fall",    settings.peak_fall_rate);
+    settings.peak_hold_frames = prefs.getUChar("peak_hold",   settings.peak_hold_frames);
+    settings.vu_attack       = prefs.getFloat("vu_attack",    settings.vu_attack);
+    settings.vu_release      = prefs.getFloat("vu_release",   settings.vu_release);
     prefs.end();
 }
 
@@ -59,6 +71,12 @@ void settings_save()
     prefs.putBool("auto_bri",     settings.auto_brightness);
     prefs.putUChar("bri_min",     settings.brightness_min);
     prefs.putUChar("bri_max",     settings.brightness_max);
+    prefs.putFloat("light_gain",  settings.light_gain);
+    prefs.putFloat("band_smooth", settings.band_smoothing);
+    prefs.putFloat("peak_fall",   settings.peak_fall_rate);
+    prefs.putUChar("peak_hold",   settings.peak_hold_frames);
+    prefs.putFloat("vu_attack",   settings.vu_attack);
+    prefs.putFloat("vu_release",  settings.vu_release);
     prefs.end();
 }
 
@@ -78,5 +96,11 @@ void settings_save_field(const char* field)
     else if (strcmp(field, "auto_bri") == 0)    prefs.putBool("auto_bri",    settings.auto_brightness);
     else if (strcmp(field, "bri_min") == 0)     prefs.putUChar("bri_min",    settings.brightness_min);
     else if (strcmp(field, "bri_max") == 0)     prefs.putUChar("bri_max",    settings.brightness_max);
+    else if (strcmp(field, "light_gain") == 0)  prefs.putFloat("light_gain", settings.light_gain);
+    else if (strcmp(field, "band_smooth") == 0) prefs.putFloat("band_smooth",settings.band_smoothing);
+    else if (strcmp(field, "peak_fall") == 0)   prefs.putFloat("peak_fall",  settings.peak_fall_rate);
+    else if (strcmp(field, "peak_hold") == 0)   prefs.putUChar("peak_hold",  settings.peak_hold_frames);
+    else if (strcmp(field, "vu_attack") == 0)   prefs.putFloat("vu_attack",  settings.vu_attack);
+    else if (strcmp(field, "vu_release") == 0)  prefs.putFloat("vu_release", settings.vu_release);
     prefs.end();
 }

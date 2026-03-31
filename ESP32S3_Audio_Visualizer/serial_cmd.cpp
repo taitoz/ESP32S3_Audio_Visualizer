@@ -42,8 +42,14 @@ static void send_status()
     doc["auto_brightness"] = (bool)settings.auto_brightness;
     doc["brightness_min"]  = settings.brightness_min;
     doc["brightness_max"]  = settings.brightness_max;
+    doc["light_gain"]      = settings.light_gain;
     doc["light_raw"]       = light_sensor_raw();
     doc["light_bri"]       = light_sensor_brightness();
+    doc["band_smoothing"]  = settings.band_smoothing;
+    doc["peak_fall_rate"]  = settings.peak_fall_rate;
+    doc["peak_hold_frames"] = settings.peak_hold_frames;
+    doc["vu_attack"]       = settings.vu_attack;
+    doc["vu_release"]      = settings.vu_release;
     doc["fps"]             = fps;
     doc["free_heap"]       = ESP.getFreeHeap();
     doc["uptime"]          = millis();
@@ -139,6 +145,30 @@ static void process_command(const char *line)
         if (doc["brightness_max"].is<int>()) {
             settings.brightness_max = doc["brightness_max"].as<uint8_t>();
             settings_save_field("bri_max");
+        }
+        if (doc["light_gain"].is<float>()) {
+            settings.light_gain = doc["light_gain"].as<float>();
+            settings_save_field("light_gain");
+        }
+        if (doc["band_smoothing"].is<float>()) {
+            settings.band_smoothing = doc["band_smoothing"].as<float>();
+            settings_save_field("band_smooth");
+        }
+        if (doc["peak_fall_rate"].is<float>()) {
+            settings.peak_fall_rate = doc["peak_fall_rate"].as<float>();
+            settings_save_field("peak_fall");
+        }
+        if (doc["peak_hold_frames"].is<int>()) {
+            settings.peak_hold_frames = doc["peak_hold_frames"].as<uint8_t>();
+            settings_save_field("peak_hold");
+        }
+        if (doc["vu_attack"].is<float>()) {
+            settings.vu_attack = doc["vu_attack"].as<float>();
+            settings_save_field("vu_attack");
+        }
+        if (doc["vu_release"].is<float>()) {
+            settings.vu_release = doc["vu_release"].as<float>();
+            settings_save_field("vu_release");
         }
 
         // Echo back current state

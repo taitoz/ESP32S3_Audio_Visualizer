@@ -1,4 +1,5 @@
 #include "vu_meter.h"
+#include "settings.h"
 #include <math.h>
 
 /*******************************************************************************
@@ -18,13 +19,20 @@ static float toDB(float amplitude)
     return 20.0f * log10f(amplitude / 2048.0f);
 }
 
-// Apply VU ballistics to one channel
+// Apply VU ballistics to one channel (tunable via settings)
 static void update_channel(int ch, float rms, float peak)
 {
+    float attack  = settings.vu_attack;
+    float release = settings.vu_release;
+    if (attack < 0.01f) attack = 0.01f;
+    if (attack > 1.0f)  attack = 1.0f;
+    if (release < 0.01f) release = 0.01f;
+    if (release > 1.0f)  release = 1.0f;
+
     if (rms > smoothedRMS[ch]) {
-        smoothedRMS[ch] = smoothedRMS[ch] + VU_ATTACK_COEFF * (rms - smoothedRMS[ch]);
+        smoothedRMS[ch] = smoothedRMS[ch] + attack * (rms - smoothedRMS[ch]);
     } else {
-        smoothedRMS[ch] = smoothedRMS[ch] + VU_RELEASE_COEFF * (rms - smoothedRMS[ch]);
+        smoothedRMS[ch] = smoothedRMS[ch] + release * (rms - smoothedRMS[ch]);
     }
 
     if (peak > smoothedPeak[ch]) {

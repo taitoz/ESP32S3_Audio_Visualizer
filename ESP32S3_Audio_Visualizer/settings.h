@@ -24,6 +24,14 @@ struct Settings {
     volatile bool    auto_brightness;   // enable auto-brightness adjustment
     volatile uint8_t brightness_min;    // minimum PWM when dark (0–255)
     volatile uint8_t brightness_max;    // maximum PWM when bright (0–255)
+    volatile float   light_gain;        // light sensor gain multiplier (default 1.0)
+    // Spectrum analyzer tunables
+    volatile float   band_smoothing;    // exponential smoothing (0=instant, 1=frozen, default 0.7)
+    volatile float   peak_fall_rate;    // peak dot fall speed per frame (default 0.5)
+    volatile uint8_t peak_hold_frames;  // frames to hold peak before falling (default 15)
+    // VU meter tunables
+    volatile float   vu_attack;         // VU attack coefficient (default 0.3)
+    volatile float   vu_release;        // VU release coefficient (default 0.5)
 };
 
 extern Settings settings;

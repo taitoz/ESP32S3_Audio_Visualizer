@@ -65,8 +65,8 @@ button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;
 
 <div class="card">
 <h2>Display</h2>
-<div class="row"><label>Manual Brightness</label><span id="briVal">255</span></div>
-<div class="row"><input type="range" id="bri" min="0" max="255" value="255"></div>
+<div class="row"><label>Manual Brightness</label><span id="briVal">128</span></div>
+<div class="row"><input type="range" id="bri" min="0" max="255" value="128"></div>
 <div class="row"><label>Auto-Brightness</label>
 <label class="toggle"><input type="checkbox" id="autoBri"><span class="slider"></span></label>
 </div>
@@ -75,10 +75,30 @@ button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;
 <div class="row"><input type="range" id="briMin" min="0" max="255" value="10"></div>
 <div class="row"><label>Max Brightness</label><span id="briMaxVal">255</span></div>
 <div class="row"><input type="range" id="briMax" min="0" max="255" value="255"></div>
+<div class="row"><label>Sensor Gain</label><span id="lightGainVal">1.0</span></div>
+<div class="row"><input type="range" id="lightGain" min="0.1" max="5.0" step="0.1" value="1.0"></div>
 <div class="row"><label>Light Sensor</label><span id="lightRaw">--</span></div>
 <div class="row"><label>Current PWM</label><span id="lightBri">--</span></div>
 </div>
 <div class="row"><label>FPS</label><span id="fpsVal">--</span></div>
+</div>
+
+<div class="card">
+<h2>Spectrum Analyzer</h2>
+<div class="row"><label>Band Smoothing</label><span id="bandSmoothVal">0.70</span></div>
+<div class="row"><input type="range" id="bandSmooth" min="0" max="0.99" step="0.01" value="0.70"></div>
+<div class="row"><label>Peak Fall Rate</label><span id="peakFallVal">0.50</span></div>
+<div class="row"><input type="range" id="peakFall" min="0.1" max="3.0" step="0.1" value="0.50"></div>
+<div class="row"><label>Peak Hold (frames)</label><span id="peakHoldVal">15</span></div>
+<div class="row"><input type="range" id="peakHold" min="0" max="60" step="1" value="15"></div>
+</div>
+
+<div class="card">
+<h2>VU Meter</h2>
+<div class="row"><label>Attack</label><span id="vuAttackVal">0.30</span></div>
+<div class="row"><input type="range" id="vuAttack" min="0.01" max="1.0" step="0.01" value="0.30"></div>
+<div class="row"><label>Release</label><span id="vuReleaseVal">0.50</span></div>
+<div class="row"><input type="range" id="vuRelease" min="0.01" max="1.0" step="0.01" value="0.50"></div>
 </div>
 
 <div class="card">
@@ -247,8 +267,14 @@ function handleResponse(data) {
         }
         if (data.brightness_min !== undefined) { $('#briMin').value = data.brightness_min; $('#briMinVal').textContent = data.brightness_min; }
         if (data.brightness_max !== undefined) { $('#briMax').value = data.brightness_max; $('#briMaxVal').textContent = data.brightness_max; }
+        if (data.light_gain !== undefined) { $('#lightGain').value = data.light_gain; $('#lightGainVal').textContent = parseFloat(data.light_gain).toFixed(1); }
         if (data.light_raw !== undefined) { $('#lightRaw').textContent = data.light_raw; }
         if (data.light_bri !== undefined) { $('#lightBri').textContent = data.light_bri; }
+        if (data.band_smoothing !== undefined) { $('#bandSmooth').value = data.band_smoothing; $('#bandSmoothVal').textContent = parseFloat(data.band_smoothing).toFixed(2); }
+        if (data.peak_fall_rate !== undefined) { $('#peakFall').value = data.peak_fall_rate; $('#peakFallVal').textContent = parseFloat(data.peak_fall_rate).toFixed(1); }
+        if (data.peak_hold_frames !== undefined) { $('#peakHold').value = data.peak_hold_frames; $('#peakHoldVal').textContent = data.peak_hold_frames; }
+        if (data.vu_attack !== undefined) { $('#vuAttack').value = data.vu_attack; $('#vuAttackVal').textContent = parseFloat(data.vu_attack).toFixed(2); }
+        if (data.vu_release !== undefined) { $('#vuRelease').value = data.vu_release; $('#vuReleaseVal').textContent = parseFloat(data.vu_release).toFixed(2); }
         if (data.fps !== undefined) { $('#fpsVal').textContent = data.fps.toFixed(1); }
         if (data.free_heap !== undefined) { $('#heap').textContent = (data.free_heap / 1024).toFixed(0) + ' KB'; }
         if (data.uptime !== undefined) {
@@ -305,6 +331,12 @@ $('#autoBri').addEventListener('change', e => {
 
 onSlider('#briMin', '#briMinVal', 'brightness_min', false);
 onSlider('#briMax', '#briMaxVal', 'brightness_max', false);
+onSlider('#lightGain', '#lightGainVal', 'light_gain', true);
+onSlider('#bandSmooth', '#bandSmoothVal', 'band_smoothing', true);
+onSlider('#peakFall', '#peakFallVal', 'peak_fall_rate', true);
+onSlider('#peakHold', '#peakHoldVal', 'peak_hold_frames', false);
+onSlider('#vuAttack', '#vuAttackVal', 'vu_attack', true);
+onSlider('#vuRelease', '#vuReleaseVal', 'vu_release', true);
 
 // Check Web Serial API support
 if (!('serial' in navigator)) {

@@ -74,19 +74,22 @@ static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
         val = val / divisor;
         if (val > halfH) val = halfH;
 
-        // Exponential smoothing
-        bandSmoothed[i] = bandSmoothed[i] * BAND_SMOOTHING + val * (1.0f - BAND_SMOOTHING);
+        // Exponential smoothing (tunable via settings)
+        float smooth = settings.band_smoothing;
+        if (smooth < 0.0f) smooth = 0.0f;
+        if (smooth > 0.99f) smooth = 0.99f;
+        bandSmoothed[i] = bandSmoothed[i] * smooth + val * (1.0f - smooth);
         bandValues[i] = bandSmoothed[i];
 
-        // Peak detection with hold & fall
+        // Peak detection with hold & fall (tunable via settings)
         if (bandValues[i] > peakValues[i]) {
             peakValues[i] = bandValues[i];
-            peakHoldCount[i] = PEAK_HOLD_FRAMES;
+            peakHoldCount[i] = (int)settings.peak_hold_frames;
         } else {
             if (peakHoldCount[i] > 0) {
                 peakHoldCount[i]--;
             } else {
-                peakValues[i] -= PEAK_FALL_RATE;
+                peakValues[i] -= settings.peak_fall_rate;
                 if (peakValues[i] < 0) peakValues[i] = 0;
             }
         }
