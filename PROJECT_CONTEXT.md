@@ -50,27 +50,31 @@ The AXS15231B is a QSPI display in **native portrait mode** (180x640). To use la
 - Touch INT pin (GPIO11) goes LOW on touch event
 - Debounce: `touch_held` flag with timeout counter to prevent repeated triggers
 
-### 2.4 Audio Input (Transformer-coupled)
+### 2.4 Audio Input — Stereo (Transformer-coupled)
 
 **Why audio transformer**: Galvanic isolation from audio source, impedance matching, no ground loop issues.
 
-**Circuit**:
+**Circuit** (identical for each channel):
 ```
-Source → Transformer primary | secondary → 100nF coupling cap → GPIO3
-                                                                  |
-                                                            100k ─┤─ 100k
-                                                                  |     |
-                                                               3.3V    GND
+LEFT:   Audio Transformer L secondary → 100nF cap → GPIO3 (ADC1_CH2)
+                                                       ├─ 100k → 3.3V
+                                                       └─ 100k → GND
+
+RIGHT:  Audio Transformer R secondary → 100nF cap → GPIO4 (ADC1_CH3)
+                                                       ├─ 100k → 3.3V
+                                                       └─ 100k → GND
 ```
 
 **ADC Configuration**:
-- GPIO3 = ADC1_CH2 (safe to use alongside BLE — ADC2 conflicts with Wi-Fi/BLE, ADC1 does not)
+- GPIO3 = ADC1_CH2 (Left), GPIO4 = ADC1_CH3 (Right)
+- Both on ADC1 — safe to use alongside BLE (ADC2 conflicts with Wi-Fi/BLE radio)
 - Attenuation: ADC_ATTEN_DB_11 (0–3.3V full range)
 - Resolution: 12-bit (0–4095)
 - DC midpoint: ~2048 (1.65V from bias network)
 - Sample rate: 22,050 Hz (Nyquist = 11,025 Hz, covers full audible spectrum adequately)
-- Sampling method: `esp_timer` periodic callback at 45.35 us interval
-- Buffer: double-buffer of 1024 int16_t samples each, swap on fill
+- Sampling method: `esp_timer` periodic callback at 45.35 µs interval
+- Both channels read on each timer tick (interleaved oneshot reads)
+- Buffer: double-buffer of 1024 int16_t samples per channel, swap on fill
 
 ### 2.5 AK4493 DAC — SPI Control
 
@@ -119,29 +123,24 @@ Source → Transformer primary | secondary → 100nF coupling cap → GPIO3
 
 ## 3. Software Architecture
 
-### 3.1 Current Module Structure (Phase 1)
-
-```
-ESP32S3_Audio_Visualizer.ino     Main sketch — setup(), loop(), touch handling, frame dispatch
-  ├── pins_config.h              All hardware pin definitions and constants
-  ├── AXS15231B.cpp/.h           QSPI display driver (PSRAM rotation buffer)
-  ├── audio_sampling.cpp/.h      Timer-driven ADC, double-buffer, RMS/peak calculation
-  ├── spectrum.cpp/.h            arduinoFFT, 32-band log mapping, bar visualization
-  └── vu_meter.cpp/.h            3 VU styles with ballistic smoothing
-```
-
-### 3.2 Target Module Structure (All Phases)
+### 3.1 Current Module Structure (Phase 1 + Phase 5 + Phase 6)
 
 ```
 ESP32S3_Audio_Visualizer.ino     Main sketch — FreeRTOS task creation, setup
-  ├── pins_config.h              Hardware pin definitions
-  ├── AXS15231B.cpp/.h           Display driver
-  ├── audio_sampling.cpp/.h      ADC double-buffer (float, dynamic DC removal)
-  ├── spectrum.cpp/.h            FFT (float) + spectrum bars
-  ├── vu_meter.cpp/.h            VU meter styles (Needle, LED Ladder)
+  ├── pins_config.h              All hardware pin definitions and constants
+  ├── AXS15231B.cpp/.h           QSPI display driver (PSRAM rotation buffer)
+  ├── audio_sampling.cpp/.h      Timer-driven stereo ADC, double-buffer, RMS/peak
+  ├── spectrum.cpp/.h            arduinoFFT, 32-band log mapping, stereo bar visualization
+  ├── vu_meter.cpp/.h            2 VU styles (Needle, LED Ladder) with stereo ballistics
   ├── serial_cmd.cpp/.h          JSON command handler over USB CDC Serial
   ├── settings.cpp/.h            NVS persistence for all configuration
-  ├── settings.html              Standalone Web Serial UI (opened locally in browser)
+settings.html                    Standalone Web Serial UI (opened locally in browser)
+.gitignore                       Build artifacts and IDE files
+```
+
+### 3.2 Target Module Structure (All Phases — Future Additions)
+
+```
   ├── ak4493.cpp/.h              AK4493 SPI driver (register read/write, volume, filter)
   ├── ble_gearvr.cpp/.h          BLE client — scan, connect, parse Gear VR packets
   └── usb_hid.cpp/.h             USB HID mouse + keyboard output
@@ -298,7 +297,9 @@ ESP32S3_Audio_Visualizer.ino     Main sketch — FreeRTOS task creation, setup
 
 ### Phase 5: Settings UI via USB Serial + Web Serial API [DONE]
 
-**Files created**: `serial_cmd.cpp`, `serial_cmd.h`, `settings.cpp`, `settings.h`, `settings.html`
+**Files**: `serial_cmd.cpp`, `serial_cmd.h`, `settings.cpp`, `settings.h`, `settings.html`
+
+**Deprecated files removed**: `web_server.cpp`, `web_server.h` (old WiFi AP approach, replaced by USB Serial).
 
 **Architecture**: No WiFi used. The ESP32-S3 USB CDC serial (already enabled for debug output) carries bidirectional JSON commands. A standalone `settings.html` file (opened locally in Chrome/Edge) uses the Web Serial API to connect to the ESP32 COM port and provide a full settings UI.
 
@@ -317,32 +318,42 @@ PC → ESP32:  {"cmd":"restart"}                      → restart device
 ESP32 → PC:  {"status":true,"fps":10.2,...}          → periodic push / response
 ```
 
+**Integration points** (wired into firmware):
+- `serial_cmd_init()` called in `setup()` — sends `{"ready":true}` on boot
+- `serial_cmd_poll()` called from Core 0 touch task at ~50 Hz
+- `settings.viz_mode` synced to `currentMode` each frame on Core 1
+- `settings.brightness` applied via `analogWrite(TFT_BL, ...)` on set command
+- `settings.adc_sensitivity` read live by `spectrum.cpp` as FFT band divisor
+- All settings persisted to NVS per-field on change
+
 **Web UI Sections** (in settings.html):
 
 | Section | Controls |
 |---------|----------|
-| **Visualization** | Mode selector (Spectrum / VU Needle / VU LED), ADC sensitivity slider |
+| **Connection** | Connect/Disconnect button, status indicator |
+| **Visualization** | Mode selector chips (Spectrum / VU Needle / VU LED), ADC sensitivity slider |
 | **Display** | Brightness slider (PWM), live FPS display |
 | **DAC (AK4493)** | Volume L/R sliders, filter mode selector, mute toggle |
-| **System** | Free heap, uptime, restart button, serial log |
+| **System** | Free heap, uptime, restart button, serial log (scrollable) |
 
-**NVS Settings** (ESP32 Preferences library):
-```
-namespace "config":
-  viz_mode        (uint8_t)  — last active visualization
-  brightness      (uint8_t)  — backlight PWM
-  adc_sensitivity (float)    — spectrum sensitivity divisor
-  dac_volume_l    (uint8_t)  — AK4493 left volume
-  dac_volume_r    (uint8_t)  — AK4493 right volume  
-  dac_filter      (uint8_t)  — AK4493 filter mode
-  dac_sound_mode  (uint8_t)  — AK4493 sound control
-  dac_mute        (bool)     — mute state
-  mouse_sens      (float)    — USB HID mouse sensitivity
-  mouse_mode      (uint8_t)  — touchpad vs gyro
-  ble_bonded_addr (string)   — last paired Gear VR MAC address
-```
+**NVS Settings** (ESP32 Preferences library, namespace `"config"`):
 
-**Key benefits**: No WiFi stack (∼40 KB RAM saved), no external libraries (ESPAsyncWebServer/AsyncTCP not needed), zero radio interference with BLE, settings UI works via existing USB cable. Only requires ArduinoJson.
+| NVS Key | Type | Default | Description |
+|---------|------|---------|-------------|
+| `viz_mode` | uint8_t | 0 | Active visualization mode |
+| `brightness` | uint8_t | 255 | Backlight PWM (0–255) |
+| `adc_sens` | float | 300.0 | Spectrum FFT band divisor |
+| `dac_vol_l` | uint8_t | 0x00 | AK4493 left volume (0=0dB, 0xFF=mute) |
+| `dac_vol_r` | uint8_t | 0x00 | AK4493 right volume |
+| `dac_filter` | uint8_t | 0 | AK4493 filter mode (0–4) |
+| `dac_sound` | uint8_t | 0 | AK4493 sound control |
+| `dac_mute` | bool | false | Soft mute |
+| `mouse_sens` | float | 1.0 | USB HID mouse sensitivity |
+| `mouse_mode` | uint8_t | 0 | 0=touchpad, 1=gyro |
+
+**Key benefits**: No WiFi stack (~40 KB RAM saved), no external libraries (ESPAsyncWebServer/AsyncTCP not needed), zero radio interference with BLE, settings UI works via existing USB cable. Only requires ArduinoJson.
+
+**Web Serial browser support**: Chrome 89+, Edge 89+, Opera 76+. Not supported in Firefox/Safari — they can use a native serial terminal with the same JSON protocol.
 
 ---
 
@@ -439,4 +450,4 @@ void bleHidTask(void *param) {
 
 ---
 
-*Last updated: Phase 1 + Phase 5 + Phase 6 complete. Dual-core FreeRTOS, float FFT, dynamic DC removal, 2 VU styles, WebSerial settings UI. Next: Phase 2 (AK4493 SPI driver).*
+*Last updated: Phase 1 + Phase 5 + Phase 6 complete. Stereo ADC (GPIO3 L, GPIO4 R), dual-core FreeRTOS, float FFT, dynamic DC removal, 2 VU styles, USB Serial + Web Serial API settings UI with NVS persistence. Deprecated WiFi web_server removed. Next: Phase 2 (AK4493 SPI driver).*

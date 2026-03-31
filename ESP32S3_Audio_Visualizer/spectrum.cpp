@@ -1,6 +1,7 @@
 #include "spectrum.h"
 #include <arduinoFFT.h>
 #include "pins_config.h"
+#include "settings.h"
 
 /*******************************************************************************
  * FFT processing and bar-style spectrum visualization (Stereo)
@@ -67,8 +68,10 @@ static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
         }
 
         // Scale to half-screen height (each channel gets half)
-        // Adjust the divisor to calibrate sensitivity for your input signal
-        val = val / 300.0f;
+        // Divisor controlled by settings.adc_sensitivity (adjustable via Web Serial UI)
+        float divisor = settings.adc_sensitivity;
+        if (divisor < 1.0f) divisor = 1.0f;
+        val = val / divisor;
         if (val > halfH) val = halfH;
 
         // Exponential smoothing
