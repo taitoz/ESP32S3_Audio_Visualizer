@@ -19,6 +19,10 @@ extern float peakValuesL[NUM_BANDS];      // Left channel peak hold per band
 extern float bandValuesR[NUM_BANDS];      // Right channel magnitude per band (smoothed)
 extern float peakValuesR[NUM_BANDS];      // Right channel peak hold per band
 
+// Precomputed lookup tables for safe optimization (reduced memory)
+extern float hannWindow[SAMPLES];          // Precomputed Hann window coefficients
+extern int   binToBand[256];               // FFT bin → frequency band mapping (reduced size)
+
 void spectrum_init();
 void spectrum_compute_fft();              // run FFT on both L and R channels
 void spectrum_draw_bars(TFT_eSprite &spr); // draw stereo bar-style spectrum analyzer

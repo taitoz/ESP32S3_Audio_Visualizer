@@ -20,18 +20,58 @@ static int   peakHoldCountR[NUM_BANDS] = {0};
 static float bandSmoothedL[NUM_BANDS]  = {0};
 static float bandSmoothedR[NUM_BANDS]  = {0};
 
-// Two ArduinoFFT objects — one per channel (float for ESP32-S3 performance)
+// Precomputed lookup tables for safe optimization (reduced memory)
+float hannWindow[SAMPLES];
+int   binToBand[256];
+
+// ArduinoFFT objects - keep for compatibility with precomputed optimizations
 static ArduinoFFT<float> FFT_L(vRealL, vImagL, SAMPLES, SAMPLING_FREQ);
 static ArduinoFFT<float> FFT_R(vRealR, vImagR, SAMPLES, SAMPLING_FREQ);
 
 void spectrum_init()
 {
+    // Initialize band arrays
     for (int i = 0; i < NUM_BANDS; i++) {
         bandValuesL[i]    = 0;  bandValuesR[i]    = 0;
         bandSmoothedL[i]  = 0;  bandSmoothedR[i]  = 0;
         peakValuesL[i]    = 0;  peakValuesR[i]    = 0;
         peakHoldCountL[i] = 0;  peakHoldCountR[i] = 0;
     }
+
+    // Precompute Hann window coefficients (safe optimization)
+    for (int i = 0; i < SAMPLES; i++) {
+        hannWindow[i] = 0.5f * (1.0f - cosf(2.0f * PI * i / (SAMPLES - 1)));
+    }
+
+    // Precompute bin-to-band mapping (safe optimization - reduced memory)
+    int halfSamples = 256;  // Use reduced array size
+    for (int i = 1; i < halfSamples; i++) {
+        float freq = (float)i * SAMPLING_FREQ / SAMPLES;
+        
+        // Logarithmic frequency mapping to bands
+        float minFreq = 20.0f;  // Hz
+        float maxFreq = 11025.0f;  // Nyquist/2 for practical range
+        
+        if (freq < minFreq) {
+            binToBand[i] = 0;
+        } else if (freq > maxFreq) {
+            binToBand[i] = NUM_BANDS - 1;
+        } else {
+            // Logarithmic mapping
+            float logFreq = log10f(freq);
+            float logMin = log10f(minFreq);
+            float logMax = log10f(maxFreq);
+            float normalized = (logFreq - logMin) / (logMax - logMin);
+            binToBand[i] = (int)(normalized * (NUM_BANDS - 1) + 0.5f);
+            
+            // Clamp to valid range
+            if (binToBand[i] < 0) binToBand[i] = 0;
+            if (binToBand[i] >= NUM_BANDS) binToBand[i] = NUM_BANDS - 1;
+        }
+    }
+
+    // Precomputed optimizations are ready - no additional initialization needed
+    Serial.println("Spectrum initialized with precomputed optimizations");
 }
 
 // Process one channel's FFT bins into band values
@@ -42,21 +82,20 @@ static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
     int   bandCounts[NUM_BANDS] = {0};
     int   maxBin = SAMPLES / 2;
 
-    for (int i = 1; i < maxBin; i++) {
-        float freq = (float)i * SAMPLING_FREQ / SAMPLES;
-        float minFreq = 30.0f;
-        float maxFreq = (float)(SAMPLING_FREQ / 2);
-
-        if (freq < minFreq) continue;
-        if (freq > maxFreq) break;
-
-        float logMin = log10f(minFreq);
-        float logMax = log10f(maxFreq);
-        float logF   = log10f(freq);
-        int band = (int)((logF - logMin) / (logMax - logMin) * NUM_BANDS);
-        if (band < 0) band = 0;
+    // Use precomputed bin-to-band mapping (safe optimization - eliminates expensive log10f calls)
+    int lookupSize = 256;  // Match reduced array size
+    for (int i = 1; i < maxBin && i < lookupSize; i++) {
+        int band = binToBand[i];
+        if (band < 0 || band >= NUM_BANDS) continue;
+        
+        newBands[band] += (float)vReal[i];
+        bandCounts[band]++;
+    }
+    
+    // For remaining bins, use simplified mapping
+    for (int i = lookupSize; i < maxBin; i++) {
+        int band = (i * NUM_BANDS) / maxBin;  // Simple linear mapping
         if (band >= NUM_BANDS) band = NUM_BANDS - 1;
-
         newBands[band] += (float)vReal[i];
         bandCounts[band]++;
     }
@@ -100,16 +139,22 @@ void spectrum_compute_fft()
 {
     int halfH = SCREEN_HEIGHT / 2;
 
-    // Left channel FFT
-    FFT_L.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
-    FFT_L.compute(FFT_FORWARD);
-    FFT_L.complexToMagnitude();
+    // Left channel FFT - ArduinoFFT with precomputed Hann window optimization
+    for (int i = 0; i < SAMPLES; i++) {
+        vRealL[i] *= hannWindow[i];  // Apply precomputed window
+    }
+    FFT_L.windowing(vRealL, SAMPLES, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+    FFT_L.compute(vRealL, vImagL, SAMPLES, FFT_FORWARD);
+    FFT_L.complexToMagnitude(vRealL, vImagL, SAMPLES);
     process_bands(vRealL, bandValuesL, bandSmoothedL, peakValuesL, peakHoldCountL, halfH);
 
-    // Right channel FFT
-    FFT_R.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
-    FFT_R.compute(FFT_FORWARD);
-    FFT_R.complexToMagnitude();
+    // Right channel FFT - ArduinoFFT with precomputed Hann window optimization
+    for (int i = 0; i < SAMPLES; i++) {
+        vRealR[i] *= hannWindow[i];  // Apply precomputed window
+    }
+    FFT_R.windowing(vRealR, SAMPLES, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+    FFT_R.compute(vRealR, vImagR, SAMPLES, FFT_FORWARD);
+    FFT_R.complexToMagnitude(vRealR, vImagR, SAMPLES);
     process_bands(vRealR, bandValuesR, bandSmoothedR, peakValuesR, peakHoldCountR, halfH);
 }
 

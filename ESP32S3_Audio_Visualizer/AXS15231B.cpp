@@ -151,9 +151,11 @@ void axs15231_init(void)
             if (lcd_init[i].len & 0x80)
                 delay(200);
             if (lcd_init[i].len & 0x40)
-                delay(20);
-        }
-    }
+                delay(20);}
+}
+
+// Remove hardware rotation - use software rotation instead
+    // lcd_setRotation(1);
 }
 
 

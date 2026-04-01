@@ -137,7 +137,7 @@ void drawFrame()
     snprintf(fpsBuf, sizeof(fpsBuf), "%.0f FPS", fps);
     sprite.drawString(fpsBuf, 5, SCREEN_HEIGHT - 2, 1);
 
-    // Push to display (software-rotated 90°)
+    // Push to display (software-rotated 90° - needed for correct rendering)
     lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
 }
 
@@ -170,7 +170,9 @@ void audioDisplayTask(void *param)
             }
 
             // Draw current visualization
+            unsigned long frameStart = millis();
             drawFrame();
+            unsigned long frameTime = millis() - frameStart;
 
             // FPS calculation
             frameCount++;
@@ -179,6 +181,13 @@ void audioDisplayTask(void *param)
                 fps = (float)frameCount * 1000.0f / (float)(now - lastFpsTime);
                 frameCount = 0;
                 lastFpsTime = now;
+                
+                // Print frame timing every 3 seconds
+                static unsigned long lastPrint = 0;
+                if (now - lastPrint >= 3000) {
+                    Serial.printf("FPS: %.1f, Frame time: %lums\n", fps, frameTime);
+                    lastPrint = now;
+                }
             }
         }
         vTaskDelay(1);  // yield briefly to avoid WDT
@@ -228,6 +237,7 @@ void setup()
     digitalWrite(TOUCH_RES, LOW);  delay(10);
     digitalWrite(TOUCH_RES, HIGH); delay(2);
     Wire.begin(TOUCH_IICSDA, TOUCH_IICSCL);
+    Wire.setClock(400000);  // I2C Fast Mode — reduces touch polling bus hold time
 
     // Settings init (load from NVS)
     settings_init();
