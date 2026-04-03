@@ -56,6 +56,7 @@ enum VisMode {
 };
 
 volatile VisMode currentMode = VIS_EQ;
+volatile bool pendingModeSwitch = false;
 
 // ─── FPS counter ────────────────────────────────────────────────────────────
 unsigned long frameCount = 0;
@@ -99,15 +100,14 @@ bool checkTouch()
 
 void cycleMode()
 {
-    currentMode = (VisMode)((currentMode + 1) % VIS_MODE_COUNT);
-    settings.viz_mode = (uint8_t)currentMode;
+    pendingModeSwitch = true;  // Safe: audioDisplayTask handles the actual switch
 }
 
 // ─── Draw FPS overlay into sprite (no push — caller pushes full frame) ──────
 static void drawFPS()
 {
     sprite.fillRect(280, 0, 80, 14, VFD_BG);
-    sprite.setTextColor(VFD_GRID, VFD_BG);
+    sprite.setTextColor(VFD_CYAN_FULL, VFD_BG);
     sprite.setTextDatum(TC_DATUM);
     char fpsBuf[16];
     snprintf(fpsBuf, sizeof(fpsBuf), "%.0f FPS", fps);
@@ -123,6 +123,14 @@ void audioDisplayTask(void *param)
     lastFpsTime = millis();
 
     for (;;) {
+        // Handle mode switch from touch (safe — only this task touches display)
+        if (pendingModeSwitch) {
+            pendingModeSwitch = false;
+            currentMode = (VisMode)((currentMode + 1) % VIS_MODE_COUNT);
+            settings.viz_mode = (uint8_t)currentMode;
+            Serial.printf("Mode switch -> %d\n", (int)currentMode);
+        }
+
         // Sync viz mode from serial UI
         VisMode serialMode = (VisMode)settings.viz_mode;
         if (serialMode < VIS_MODE_COUNT && serialMode != currentMode) {

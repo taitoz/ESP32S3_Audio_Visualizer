@@ -67,8 +67,8 @@ void spectrum_compute_fft(void) {
         // Use log scale for perceptual loudness mapping
         // log10(1) = 0, log10(100) = 2, log10(10000) = 4, log10(50000) ≈ 4.7
         float normL = 0, normR = 0;
-        if (sumL > 1.0f) normL = log10f(sumL) / 4.5f;
-        if (sumR > 1.0f) normR = log10f(sumR) / 4.5f;
+        if (sumL > 1.0f) normL = log10f(sumL) / 3.0f;
+        if (sumR > 1.0f) normR = log10f(sumR) / 3.0f;
         
         // Clamp 0..1
         if (normL > 1.0f) normL = 1.0f;
