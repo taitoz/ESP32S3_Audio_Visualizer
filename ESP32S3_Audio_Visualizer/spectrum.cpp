@@ -1,5 +1,5 @@
 #include "spectrum.h"
-#include <ArduinoFFT.h>
+#include <arduinoFFT.h>
 
 /*******************************************************************************
  * Minimal Spectrum Module - ArduinoFFT 2.0.4 Implementation
@@ -7,12 +7,6 @@
  * Provides FFT computation for Technics EQ mode using ArduinoFFT library.
  * All visualization code removed - only FFT processing remains.
  ******************************************************************************/
-
-// ─── External Variables (from audio_sampling) ───────────────────────────────
-extern float vRealL[SAMPLES];
-extern float vImagL[SAMPLES];
-extern float vRealR[SAMPLES];
-extern float vImagR[SAMPLES];
 
 // ─── Band Values (FFT output) ───────────────────────────────────────────────
 float bandValuesL[NUM_BANDS] = {0};

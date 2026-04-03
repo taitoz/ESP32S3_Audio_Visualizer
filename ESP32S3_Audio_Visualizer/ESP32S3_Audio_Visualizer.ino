@@ -31,11 +31,8 @@
 #include <Wire.h>
 #include "pins_config.h"
 #include "audio_sampling.h"
-#include "technics_common.h"
-#include "technics_eq.h"
-#include "technics_vfd_vu.h"
-#include "technics_analog.h"
-#include "spectrum.h"  // Keep for FFT functionality
+#include "technics_vfd.h"
+#include "spectrum.h"
 #include "settings.h"
 #include "serial_cmd.h"
 #include "light_sensor.h"
@@ -53,13 +50,12 @@ unsigned long touch_released_at = 0;
 
 // ─── Visualization Mode (volatile — written by Core 0, read by Core 1) ─────
 enum VisMode {
-    VIS_SPECTRUM = 0,      // Replaced with Technics EQ
-    VIS_VU_NEEDLE,         // Replaced with Technics Analog
-    VIS_VU_LED_LADDER,     // Replaced with Technics VFD VU
+    VIS_EQ = 0,            // Technics EQ (SH-GE70)
+    VIS_VU,                // Technics VFD VU (RS-TR373)
     VIS_MODE_COUNT
 };
 
-volatile VisMode currentMode = VIS_SPECTRUM;
+volatile VisMode currentMode = VIS_EQ;
 
 // ─── FPS counter ────────────────────────────────────────────────────────────
 unsigned long frameCount = 0;
@@ -107,19 +103,19 @@ void cycleMode()
     settings.viz_mode = (uint8_t)currentMode;
 }
 
-// ─── Draw Frame (Technics VFD Legacy - Minimal Sprite Usage) ──────────────────
-void drawFrame()
+// ─── Draw FPS overlay (top center, minimal) ────────────────────────────────
+static void drawFPS()
 {
-    // Only draw FPS overlay - all visualizations use direct TFT updates
-    sprite.fillSprite(TFT_BLACK);
-    sprite.setTextDatum(TC_DATUM);
+    tft.setTextColor(VFD_GRID, VFD_BG);
+    tft.setTextDatum(TC_DATUM);
     char fpsBuf[16];
     snprintf(fpsBuf, sizeof(fpsBuf), "%.0f FPS", fps);
-    sprite.drawString(fpsBuf, SCREEN_WIDTH/2, 5, 1);
-
-    // Push only FPS overlay (small area for maximum performance)
-    lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, 20, (uint16_t*)sprite.getPointer());
+    tft.fillRect(280, 0, 80, 14, VFD_BG);  // Clear previous text
+    tft.drawString(fpsBuf, 320, 2, 1);
 }
+
+// ─── Track last mode for background redraw on switch ────────────────────────
+static VisMode lastDrawnMode = VIS_MODE_COUNT;  // Force first draw
 
 // ─── Core 1 Task: Audio + FFT + Display ─────────────────────────────────────
 void audioDisplayTask(void *param)
@@ -127,64 +123,37 @@ void audioDisplayTask(void *param)
     lastFpsTime = millis();
 
     for (;;) {
-        // Sync viz mode from serial UI (settings.viz_mode may be changed by serial handler on Core 0)
+        // Sync viz mode from serial UI
         VisMode serialMode = (VisMode)settings.viz_mode;
         if (serialMode < VIS_MODE_COUNT && serialMode != currentMode) {
             currentMode = serialMode;
+        }
+
+        // Redraw background when mode changes
+        if (currentMode != lastDrawnMode) {
+            if (currentMode == VIS_EQ) technics_vfd_draw_bg_eq(tft);
+            else                        technics_vfd_draw_bg_vu(tft);
+            lastDrawnMode = currentMode;
         }
 
         if (audio_sampling_is_ready()) {
             audio_sampling_consume();
 
             float rmsL  = audio_get_rms(CH_LEFT);
-            float peakL = audio_get_peak(CH_LEFT);
             float rmsR  = audio_get_rms(CH_RIGHT);
-            float peakR = audio_get_peak(CH_RIGHT);
 
-            // RMS values processed by Technics modules
-            // No old VU meter processing needed
-
-            // Only run FFT when needed (it's the most expensive computation)
-            if (currentMode == VIS_SPECTRUM) {
+            // Run FFT only for EQ mode
+            if (currentMode == VIS_EQ) {
                 spectrum_compute_fft();
+                technics_vfd_draw_eq(tft, bandValuesL, NUM_BANDS);
+            } else {
+                technics_vfd_draw_vu(tft, rmsL, rmsR);
             }
 
-            // Draw current visualization using Technics VFD Legacy
-            unsigned long frameStart = millis();
-            
-            switch (currentMode) {
-                case VIS_SPECTRUM:
-                    // Technics EQ - use spectrum bands from FFT
-                    {
-                        float eq_bands[EQ_BANDS];
-                        // Convert FFT bands to EQ bands (simplified mapping)
-                        for (int i = 0; i < EQ_BANDS && i < 32; i++) {  // Use fixed NUM_BANDS value
-                            eq_bands[i] = bandValuesL[i];  // Use left channel for mono EQ
-                        }
-                        technics_eq_update(tft, eq_bands);
-                    }
-                    break;
-                    
-                case VIS_VU_NEEDLE:
-                    // Technics Analog VU - needle style
-                    technics_analog_update(tft, rmsL, rmsR);
-                    break;
-                    
-                case VIS_VU_LED_LADDER:
-                    // Technics VFD VU - segmented bars with peak hold
-                    technics_vfd_vu_update(tft, rmsL, rmsR);
-                    break;
-                    
-                default:
-                    // Fallback to safe mode
-                    currentMode = VIS_SPECTRUM;
-                    break;
-            }
-            
-            // Draw FPS overlay (minimal sprite usage)
-            drawFrame();
-            
-            unsigned long frameTime = millis() - frameStart;
+            // FPS overlay
+            drawFPS();
+
+            unsigned long frameTime = millis() - millis();
 
             // FPS calculation
             frameCount++;
@@ -265,29 +234,12 @@ void setup()
     audio_sampling_init();
     spectrum_init();
     
-    // Initialize Technics VFD Legacy modules with error checking
-    Serial.println("Initializing Technics VFD Legacy modules...");
-    
-    // Initialize EQ first (most stable)
-    technics_eq_init(tft);
-    delay(100);
-    
-    // Initialize VFD VU
-    technics_vfd_vu_init(tft);
-    delay(100);
-    
-    // Initialize Analog (most complex)
-    technics_analog_init(tft);
-    delay(100);
-    
-    Serial.println("Technics modules initialization completed");
+    // Initialize Technics VFD module (sprites only, no heavy images)
+    technics_vfd_init(tft);
 
-    // Force safe mode on startup to prevent boot loop
-    currentMode = VIS_SPECTRUM;  // Start with EQ mode (safest)
-    // TODO: Restore saved mode after testing
-    // if (settings.viz_mode < VIS_MODE_COUNT) {
-    //     currentMode = (VisMode)settings.viz_mode;
-    // }
+    // Start in EQ mode
+    currentMode = VIS_EQ;
+    lastDrawnMode = VIS_MODE_COUNT;  // Force background draw on first frame
 
     // Serial command handler init
     serial_cmd_init();

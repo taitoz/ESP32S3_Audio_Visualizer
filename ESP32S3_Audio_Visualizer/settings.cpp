@@ -34,6 +34,7 @@ void settings_init()
     // Load saved values (if they exist)
     prefs.begin("config", true);  // read-only
     settings.viz_mode        = prefs.getUChar("viz_mode",    settings.viz_mode);
+    if (settings.viz_mode >= 2) settings.viz_mode = 0;  // Clamp to valid modes (VIS_EQ=0, VIS_VU=1)
     settings.brightness      = prefs.getUChar("brightness",  settings.brightness);
     settings.adc_sensitivity = prefs.getFloat("adc_sens",    settings.adc_sensitivity);
     settings.dac_volume_l    = prefs.getUChar("dac_vol_l",   settings.dac_volume_l);

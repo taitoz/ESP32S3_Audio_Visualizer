@@ -1,0 +1,255 @@
+#include "technics_vfd.h"
+
+/*******************************************************************************
+ * Technics Authentic VFD - Implementation
+ * 
+ * No PROGMEM images. Backgrounds drawn with fillRect/drawLine.
+ * Dirty Rectangles: only changed segments are redrawn via small sprites.
+ ******************************************************************************/
+
+// ─── EQ State ───────────────────────────────────────────────────────────────
+static float eq_filtered[EQ_BANDS] = {0};
+static int   eq_last_full[EQ_BANDS] = {0};   // last full-lit segment count
+static int   eq_last_half[EQ_BANDS] = {0};   // last half-lit flag (0 or 1)
+static TFT_eSprite *eq_spr[EQ_BANDS] = {0};
+
+// ─── VU State ───────────────────────────────────────────────────────────────
+static float vu_filtered[2] = {0};
+static int   vu_last_seg[2] = {0};
+static int   vu_peak_seg[2] = {0};
+static unsigned long vu_peak_time[2] = {0};
+static TFT_eSprite *vu_spr[2] = {0};
+
+static bool inited = false;
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+static inline uint16_t vfd_color(int seg, int threshold, bool half) {
+    if (seg >= threshold) return half ? VFD_CYAN_HALF : VFD_CYAN_FULL;
+    return half ? VFD_AMBER_HALF : VFD_AMBER_FULL;
+}
+
+// ─── Draw Programmatic EQ Background ────────────────────────────────────────
+void technics_vfd_draw_bg_eq(TFT_eSPI &tft) {
+    tft.fillScreen(VFD_BG);
+
+    // Draw grid lines for each band column
+    for (int b = 0; b < EQ_BANDS; b++) {
+        int x = EQ_X0 + b * (EQ_SEG_W + EQ_BAND_GAP);
+        // Thin vertical guide lines on sides of each band
+        tft.drawFastVLine(x - 1, EQ_Y_BOTTOM - EQ_SPRITE_H, EQ_SPRITE_H, VFD_GRID);
+        tft.drawFastVLine(x + EQ_SEG_W, EQ_Y_BOTTOM - EQ_SPRITE_H, EQ_SPRITE_H, VFD_GRID);
+    }
+
+    // Horizontal 0dB line at ~80% height
+    int zeroY = EQ_Y_BOTTOM - (int)(EQ_SPRITE_H * 0.8f);
+    tft.drawFastHLine(EQ_X0 - 5, zeroY, EQ_BANDS * (EQ_SEG_W + EQ_BAND_GAP), VFD_GRID);
+
+    // Frequency labels
+    const char *labels[] = {"63", "160", "400", "1k", "2.5k", "6.3k", "10k", "16k"};
+    tft.setTextColor(VFD_GRID, VFD_BG);
+    tft.setTextDatum(TC_DATUM);
+    for (int b = 0; b < EQ_BANDS; b++) {
+        int cx = EQ_X0 + b * (EQ_SEG_W + EQ_BAND_GAP) + EQ_SEG_W / 2;
+        tft.drawString(labels[b], cx, EQ_Y_BOTTOM + 4, 1);
+    }
+}
+
+// ─── Draw Programmatic VU Background ────────────────────────────────────────
+void technics_vfd_draw_bg_vu(TFT_eSPI &tft) {
+    tft.fillScreen(VFD_BG);
+
+    // Channel labels
+    tft.setTextColor(VFD_CYAN_FULL, VFD_BG);
+    tft.setTextDatum(MR_DATUM);
+    tft.drawString("L", VU_X0 - 10, VU_Y_L + VU_SEG_H / 2, 2);
+    tft.drawString("R", VU_X0 - 10, VU_Y_R + VU_SEG_H / 2, 2);
+
+    // dB scale marks
+    tft.setTextColor(VFD_GRID, VFD_BG);
+    tft.setTextDatum(TC_DATUM);
+    const char *db_labels[] = {"-20", "-10", "-5", "0", "+3", "+6"};
+    const int db_segs[] = {0, 22, 33, VU_0DB_SEG, 49, VU_MAX_SEGS - 1};
+    for (int i = 0; i < 6; i++) {
+        int x = VU_X0 + db_segs[i] * (VU_SEG_W + VU_SEG_GAP);
+        tft.drawFastVLine(x, VU_Y_L - 8, 5, VFD_GRID);
+        tft.drawFastVLine(x, VU_Y_R + VU_SEG_H + 3, 5, VFD_GRID);
+        tft.drawString(db_labels[i], x, VU_Y_L - 18, 1);
+    }
+
+    // Horizontal guide lines
+    tft.drawFastHLine(VU_X0, VU_Y_L - 1, VU_BAR_W, VFD_GRID);
+    tft.drawFastHLine(VU_X0, VU_Y_L + VU_SEG_H + 1, VU_BAR_W, VFD_GRID);
+    tft.drawFastHLine(VU_X0, VU_Y_R - 1, VU_BAR_W, VFD_GRID);
+    tft.drawFastHLine(VU_X0, VU_Y_R + VU_SEG_H + 1, VU_BAR_W, VFD_GRID);
+}
+
+// ─── Init ───────────────────────────────────────────────────────────────────
+void technics_vfd_init(TFT_eSPI &tft) {
+    if (inited) return;
+
+    // Create small EQ sprites (one per band column)
+    for (int i = 0; i < EQ_BANDS; i++) {
+        eq_spr[i] = new TFT_eSprite(&tft);
+        eq_spr[i]->createSprite(EQ_SEG_W, EQ_SPRITE_H);
+        eq_spr[i]->setSwapBytes(true);
+        eq_filtered[i] = 0;
+        eq_last_full[i] = -1;  // Force first draw
+        eq_last_half[i] = -1;
+    }
+
+    // Create VU sprites (one per channel bar)
+    for (int i = 0; i < 2; i++) {
+        vu_spr[i] = new TFT_eSprite(&tft);
+        vu_spr[i]->createSprite(VU_BAR_W, VU_SEG_H);
+        vu_spr[i]->setSwapBytes(true);
+        vu_filtered[i] = 0;
+        vu_last_seg[i] = -1;  // Force first draw
+        vu_peak_seg[i] = 0;
+        vu_peak_time[i] = 0;
+    }
+
+    inited = true;
+    Serial.println("Technics VFD initialized (no PROGMEM images)");
+}
+
+// ─── EQ Update (Dirty Rectangles) ──────────────────────────────────────────
+void technics_vfd_draw_eq(TFT_eSPI &tft, const float *bands, int numBands) {
+    if (!inited) return;
+
+    for (int b = 0; b < EQ_BANDS; b++) {
+        // Map input bands to 8 EQ bands
+        float val = 0;
+        if (numBands >= EQ_BANDS) {
+            val = bands[b];
+        } else {
+            // Average multiple bands if input has fewer
+            int start = b * numBands / EQ_BANDS;
+            int end   = (b + 1) * numBands / EQ_BANDS;
+            if (end <= start) end = start + 1;
+            float sum = 0;
+            int cnt = 0;
+            for (int j = start; j < end && j < numBands; j++) {
+                sum += bands[j];
+                cnt++;
+            }
+            val = cnt > 0 ? sum / cnt : 0;
+        }
+
+        // Clamp 0..1
+        if (val < 0) val = 0;
+        if (val > 1.0f) val = 1.0f;
+
+        // EMA smoothing
+        if (val > eq_filtered[b])
+            eq_filtered[b] = 0.7f * val + 0.3f * eq_filtered[b];  // Fast attack
+        else
+            eq_filtered[b] = 0.15f * val + 0.85f * eq_filtered[b]; // Slow release
+
+        // Compute segments: full + half
+        float seg_f = eq_filtered[b] * EQ_MAX_SEGS;
+        int full = (int)seg_f;
+        float frac = seg_f - full;
+        int half = 0;
+        if (frac > 0.75f) { full++; half = 0; }
+        else if (frac > 0.25f) { half = 1; }
+        if (full > EQ_MAX_SEGS) full = EQ_MAX_SEGS;
+
+        // Dirty check — skip if nothing changed
+        if (full == eq_last_full[b] && half == eq_last_half[b]) continue;
+        eq_last_full[b] = full;
+        eq_last_half[b] = half;
+
+        // Redraw this band's sprite
+        TFT_eSprite &s = *eq_spr[b];
+        s.fillSprite(VFD_BG);
+
+        for (int seg = 0; seg < EQ_MAX_SEGS; seg++) {
+            int y = EQ_SPRITE_H - (seg + 1) * (EQ_SEG_H + EQ_SEG_GAP);
+            if (y < 0) break;
+
+            if (seg < full) {
+                // Full brightness
+                int threshold = (int)(EQ_MAX_SEGS * 0.8f);
+                s.fillRect(0, y, EQ_SEG_W, EQ_SEG_H, vfd_color(seg, threshold, false));
+            } else if (seg == full && half) {
+                // Half brightness
+                int threshold = (int)(EQ_MAX_SEGS * 0.8f);
+                s.fillRect(0, y, EQ_SEG_W, EQ_SEG_H, vfd_color(seg, threshold, true));
+            }
+            // else: stays VFD_BG (black)
+        }
+
+        int x = EQ_X0 + b * (EQ_SEG_W + EQ_BAND_GAP);
+        int y = EQ_Y_BOTTOM - EQ_SPRITE_H;
+        s.pushSprite(x, y);
+    }
+}
+
+// ─── VU Update (Dirty Rectangles) ──────────────────────────────────────────
+void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
+    if (!inited) return;
+
+    float rms_in[2] = {rmsL, rmsR};
+    int   y_pos[2]  = {VU_Y_L, VU_Y_R};
+    unsigned long now = millis();
+
+    for (int ch = 0; ch < 2; ch++) {
+        float val = rms_in[ch];
+        if (val < 0) val = 0;
+        if (val > 1.0f) val = 1.0f;
+
+        // EMA: instant attack, viscous release
+        if (val > vu_filtered[ch])
+            vu_filtered[ch] = 0.9f * val + 0.1f * vu_filtered[ch];
+        else
+            vu_filtered[ch] = 0.15f * val + 0.85f * vu_filtered[ch];
+
+        int lit = (int)(vu_filtered[ch] * VU_MAX_SEGS);
+        if (lit > VU_MAX_SEGS) lit = VU_MAX_SEGS;
+
+        // Peak hold
+        if (lit > vu_peak_seg[ch]) {
+            vu_peak_seg[ch] = lit;
+            vu_peak_time[ch] = now;
+        }
+        int peak_seg = vu_peak_seg[ch];
+        bool peak_active = (now - vu_peak_time[ch]) < PEAK_HOLD_MS;
+        bool peak_fading = !peak_active && (now - vu_peak_time[ch]) < (PEAK_HOLD_MS + PEAK_FADE_MS);
+        if (!peak_active && !peak_fading) {
+            vu_peak_seg[ch] = lit;  // Reset peak
+        }
+
+        // Dirty check
+        if (lit == vu_last_seg[ch] && !peak_fading) continue;
+        vu_last_seg[ch] = lit;
+
+        // Redraw VU bar sprite
+        TFT_eSprite &s = *vu_spr[ch];
+        s.fillSprite(VFD_BG);
+
+        for (int seg = 0; seg < VU_MAX_SEGS; seg++) {
+            int x = seg * (VU_SEG_W + VU_SEG_GAP);
+
+            if (seg < lit) {
+                s.fillRect(x, 0, VU_SEG_W, VU_SEG_H, vfd_color(seg, VU_0DB_SEG, false));
+            } else if (seg == lit) {
+                // Half-bright leading segment
+                float frac = vu_filtered[ch] * VU_MAX_SEGS - lit;
+                if (frac > 0.25f) {
+                    bool is_full = frac > 0.75f;
+                    s.fillRect(x, 0, VU_SEG_W, VU_SEG_H, vfd_color(seg, VU_0DB_SEG, !is_full));
+                }
+            }
+        }
+
+        // Peak hold dot
+        if ((peak_active || peak_fading) && peak_seg > 0 && peak_seg < VU_MAX_SEGS) {
+            int px = peak_seg * (VU_SEG_W + VU_SEG_GAP);
+            bool half = peak_fading;
+            s.fillRect(px, 0, VU_SEG_W, VU_SEG_H, vfd_color(peak_seg, VU_0DB_SEG, half));
+        }
+
+        s.pushSprite(VU_X0, y_pos[ch]);
+    }
+}
