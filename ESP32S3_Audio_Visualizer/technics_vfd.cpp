@@ -247,7 +247,7 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
         
         // Draw VU bar into small sprite - full redraw each frame (fast)
         TFT_eSprite *vuSprite = (ch == 0) ? vuSpriteL : vuSpriteR;
-        vuSprite->fillSprite(VFD_BG);
+        vuSprite->fillSprite(TFT_BLACK);  // Clear with black background
         
         for (int seg = 0; seg < VU_MAX_SEGS; seg++) {
             int sx = seg * (VU_SEG_W + VU_SEG_GAP);
@@ -260,10 +260,10 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
                     bool is_full = frac > 0.75f;
                     vuSprite->fillRect(sx, 0, VU_SEG_W, VU_SEG_H, vfd_color_vu(seg, VU_0DB_SEG, !is_full));
                 } else {
-                    vuSprite->fillRect(sx, 0, VU_SEG_W, VU_SEG_H, VFD_BG);
+                    vuSprite->fillRect(sx, 0, VU_SEG_W, VU_SEG_H, TFT_BLACK);
                 }
             } else {
-                vuSprite->fillRect(sx, 0, VU_SEG_W, VU_SEG_H, VFD_BG);
+                vuSprite->fillRect(sx, 0, VU_SEG_W, VU_SEG_H, TFT_BLACK);
             }
         }
 

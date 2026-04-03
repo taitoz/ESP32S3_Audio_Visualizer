@@ -185,9 +185,11 @@ void audioDisplayTask(void *param)
                 // Only push FPS overlay area
                 uint16_t *buf = (uint16_t *)sprite.getPointer();
                 lcd_PushColors_rotated_90(280, 0, 80, 14, buf);
+                vTaskDelay(pdMS_TO_TICKS(5));  // Give Core 0 I2C access window
             } else {
                 // EQ mode: push full frame
                 lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
+                vTaskDelay(pdMS_TO_TICKS(5));  // Give Core 0 I2C access window
             }
 
             unsigned long frameTime = millis() - frameStart;
@@ -249,8 +251,8 @@ void touchTask(void *param)
             touch_held = false;
         }
 
-        // Auto-brightness from ambient light sensor
-        light_sensor_poll();
+        // Auto-brightness from ambient light sensor - TEMPORARILY DISABLED
+        // light_sensor_poll();
 
         vTaskDelay(pdMS_TO_TICKS(20));  // ~50 Hz touch + serial polling
     }
@@ -309,8 +311,8 @@ void setup()
     // Serial command handler init
     serial_cmd_init();
 
-    // Light sensor init (auto-brightness)
-    light_sensor_init();
+    // Light sensor init (auto-brightness) - TEMPORARILY DISABLED TO FIX ADC CONFLICTS
+    // light_sensor_init();
 
     // Show splash
     sprite.fillSprite(TFT_BLACK);
@@ -331,8 +333,9 @@ void setup()
     lastDrawnMode = VIS_MODE_COUNT;  // Force background draw on first frame
 
     // Launch FreeRTOS tasks on separate cores
-    BaseType_t ret1 = xTaskCreatePinnedToCore(audioDisplayTask, "AudioDisplay", 32768, NULL, 2, &audioDisplayTaskHandle, 1);
-    BaseType_t ret2 = xTaskCreatePinnedToCore(touchTask, "Touch", 8192, NULL, 1, &touchTaskHandle, 0);
+    // Touch task gets higher priority (2) to ensure I2C access
+    BaseType_t ret1 = xTaskCreatePinnedToCore(audioDisplayTask, "AudioDisplay", 32768, NULL, 1, &audioDisplayTaskHandle, 1);
+    BaseType_t ret2 = xTaskCreatePinnedToCore(touchTask, "Touch", 8192, NULL, 2, &touchTaskHandle, 0);
     
     if (ret1 == pdPASS) {
         Serial.println("AudioDisplay task created successfully");
