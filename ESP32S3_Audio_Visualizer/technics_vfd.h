@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <TFT_eSPI.h>
+#include "pins_config.h"
 
 /*******************************************************************************
  * Technics Authentic VFD - Compact Module

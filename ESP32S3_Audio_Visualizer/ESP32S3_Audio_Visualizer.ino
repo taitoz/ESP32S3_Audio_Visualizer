@@ -103,15 +103,18 @@ void cycleMode()
     settings.viz_mode = (uint8_t)currentMode;
 }
 
-// ─── Draw FPS overlay (top center, minimal) ────────────────────────────────
+// ─── Draw FPS overlay (top center, into sprite → push stripe) ───────────────
 static void drawFPS()
 {
-    tft.setTextColor(VFD_GRID, VFD_BG);
-    tft.setTextDatum(TC_DATUM);
+    sprite.fillRect(280, 0, 80, 14, VFD_BG);  // Clear previous text area
+    sprite.setTextColor(VFD_GRID, VFD_BG);
+    sprite.setTextDatum(TC_DATUM);
     char fpsBuf[16];
     snprintf(fpsBuf, sizeof(fpsBuf), "%.0f FPS", fps);
-    tft.fillRect(280, 0, 80, 14, VFD_BG);  // Clear previous text
-    tft.drawString(fpsBuf, 320, 2, 1);
+    sprite.drawString(fpsBuf, 320, 2, 1);
+    // Push only the top FPS stripe
+    uint16_t *buf = (uint16_t *)sprite.getPointer();
+    lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, 14, buf);
 }
 
 // ─── Track last mode for background redraw on switch ────────────────────────
@@ -153,7 +156,7 @@ void audioDisplayTask(void *param)
             // FPS overlay
             drawFPS();
 
-            unsigned long frameTime = millis() - millis();
+            unsigned long frameTime = millis() - frameStart;
 
             // FPS calculation
             frameCount++;
@@ -233,13 +236,6 @@ void setup()
     // Audio sampling init
     audio_sampling_init();
     spectrum_init();
-    
-    // Initialize Technics VFD module (sprites only, no heavy images)
-    technics_vfd_init(tft);
-
-    // Start in EQ mode
-    currentMode = VIS_EQ;
-    lastDrawnMode = VIS_MODE_COUNT;  // Force background draw on first frame
 
     // Serial command handler init
     serial_cmd_init();
@@ -253,16 +249,22 @@ void setup()
     sprite.setTextDatum(MC_DATUM);
     sprite.drawString("ESP32-S3 AUDIO VISUALIZER", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 - 20, 2);
     sprite.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    sprite.drawString("Touch screen to change mode", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 10, 1);
-    sprite.drawString("Settings: open settings.html via USB Serial", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 25, 1);
+    sprite.drawString("Technics VFD Legacy", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 10, 1);
     lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
-    delay(2000);
+    delay(1500);
+
+    // Initialize Technics VFD module (uses main sprite for rendering)
+    technics_vfd_init(tft);
+
+    // Start in EQ mode
+    currentMode = VIS_EQ;
+    lastDrawnMode = VIS_MODE_COUNT;  // Force background draw on first frame
 
     // Launch FreeRTOS tasks on separate cores
-    xTaskCreatePinnedToCore(audioDisplayTask, "AudioDisplay", 8192, NULL, 2, &audioDisplayTaskHandle, 1);
+    xTaskCreatePinnedToCore(audioDisplayTask, "AudioDisplay", 16384, NULL, 2, &audioDisplayTaskHandle, 1);
     xTaskCreatePinnedToCore(touchTask, "Touch", 4096, NULL, 1, &touchTaskHandle, 0);
 
-    Serial.println("Ready. Touch to cycle: Spectrum -> VU Needle -> VU LED");
+    Serial.println("Ready. Touch to cycle: EQ -> VU");
 }
 
 // ─── Loop (unused — work is done in FreeRTOS tasks) ─────────────────────────
