@@ -1,28 +1,29 @@
 #pragma once
 
 #include <Arduino.h>
-#include <TFT_eSPI.h>
-#include "audio_sampling.h"
 
 /*******************************************************************************
- * FFT Spectrum Analyzer — Stereo (L + R), processes vRealL/R and produces
- * frequency bands per channel
+ * Minimal Spectrum Module - FFT Only (for Technics EQ)
+ * 
+ * This provides only the FFT functionality needed for Technics EQ mode.
+ * All old spectrum visualization code has been removed.
  ******************************************************************************/
 
-#define NUM_BANDS          32        // number of frequency bands per channel
-#define BAND_SMOOTHING     0.7f      // exponential smoothing factor (0=instant, 1=frozen)
-#define PEAK_FALL_RATE     0.5f      // peak dot fall speed per frame
-#define PEAK_HOLD_FRAMES   15        // frames to hold peak before falling
+// ─── FFT Constants ───────────────────────────────────────────────────────────
+#define SAMPLES            1024
+#define SAMPLING_FREQ      22050
+#define NUM_BANDS           32      // Frequency bands for FFT output
 
-extern float bandValuesL[NUM_BANDS];      // Left channel magnitude per band (smoothed)
-extern float peakValuesL[NUM_BANDS];      // Left channel peak hold per band
-extern float bandValuesR[NUM_BANDS];      // Right channel magnitude per band (smoothed)
-extern float peakValuesR[NUM_BANDS];      // Right channel peak hold per band
+// ─── External Variables (from audio_sampling) ───────────────────────────────
+extern float vRealL[SAMPLES];
+extern float vImagL[SAMPLES];
+extern float vRealR[SAMPLES];
+extern float vImagR[SAMPLES];
 
-// Precomputed lookup tables for safe optimization (reduced memory)
-extern float hannWindow[SAMPLES];          // Precomputed Hann window coefficients
-extern int   binToBand[256];               // FFT bin → frequency band mapping (reduced size)
+// ─── Band Values (FFT output) ───────────────────────────────────────────────
+extern float bandValuesL[NUM_BANDS];
+extern float bandValuesR[NUM_BANDS];
 
-void spectrum_init();
-void spectrum_compute_fft();              // run FFT on both L and R channels
-void spectrum_draw_bars(TFT_eSprite &spr); // draw stereo bar-style spectrum analyzer
+// ─── Public Interface ───────────────────────────────────────────────────────
+void spectrum_init(void);
+void spectrum_compute_fft(void);

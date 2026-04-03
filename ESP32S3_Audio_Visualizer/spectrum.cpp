@@ -1,231 +1,68 @@
 #include "spectrum.h"
-#include <arduinoFFT.h>
-#include "pins_config.h"
-#include "settings.h"
+#include <ArduinoFFT.h>
 
 /*******************************************************************************
- * FFT processing and bar-style spectrum visualization (Stereo)
+ * Minimal Spectrum Module - FFT Only Implementation
  * 
- * Layout: L channel bars grow DOWN from center, R channel bars grow UP from center
- * This creates a mirrored stereo spectrum display across the 640px width.
+ * Provides FFT computation for Technics EQ mode.
+ * All visualization code removed - only FFT processing remains.
  ******************************************************************************/
 
-float bandValuesL[NUM_BANDS]    = {0};
-float peakValuesL[NUM_BANDS]    = {0};
-float bandValuesR[NUM_BANDS]    = {0};
-float peakValuesR[NUM_BANDS]    = {0};
+// ─── External Variables (from audio_sampling) ───────────────────────────────
+extern float vRealL[SAMPLES];
+extern float vImagL[SAMPLES];
+extern float vRealR[SAMPLES];
+extern float vImagR[SAMPLES];
 
-static int   peakHoldCountL[NUM_BANDS] = {0};
-static int   peakHoldCountR[NUM_BANDS] = {0};
-static float bandSmoothedL[NUM_BANDS]  = {0};
-static float bandSmoothedR[NUM_BANDS]  = {0};
+// ─── Band Values (FFT output) ───────────────────────────────────────────────
+float bandValuesL[NUM_BANDS] = {0};
+float bandValuesR[NUM_BANDS] = {0};
 
-// Precomputed lookup tables for safe optimization (reduced memory)
-float hannWindow[SAMPLES];
-int   binToBand[256];
-
-// ArduinoFFT objects - keep for compatibility with precomputed optimizations
+// ─── FFT Objects ───────────────────────────────────────────────────────────
 static ArduinoFFT<float> FFT_L(vRealL, vImagL, SAMPLES, SAMPLING_FREQ);
 static ArduinoFFT<float> FFT_R(vRealR, vImagR, SAMPLES, SAMPLING_FREQ);
 
-void spectrum_init()
-{
+// ─── Public Functions ───────────────────────────────────────────────────────
+
+void spectrum_init(void) {
     // Initialize band arrays
     for (int i = 0; i < NUM_BANDS; i++) {
-        bandValuesL[i]    = 0;  bandValuesR[i]    = 0;
-        bandSmoothedL[i]  = 0;  bandSmoothedR[i]  = 0;
-        peakValuesL[i]    = 0;  peakValuesR[i]    = 0;
-        peakHoldCountL[i] = 0;  peakHoldCountR[i] = 0;
-    }
-
-    // Precompute Hann window coefficients (safe optimization)
-    for (int i = 0; i < SAMPLES; i++) {
-        hannWindow[i] = 0.5f * (1.0f - cosf(2.0f * PI * i / (SAMPLES - 1)));
-    }
-
-    // Precompute bin-to-band mapping (safe optimization - reduced memory)
-    int halfSamples = 256;  // Use reduced array size
-    for (int i = 1; i < halfSamples; i++) {
-        float freq = (float)i * SAMPLING_FREQ / SAMPLES;
-        
-        // Logarithmic frequency mapping to bands
-        float minFreq = 20.0f;  // Hz
-        float maxFreq = 11025.0f;  // Nyquist/2 for practical range
-        
-        if (freq < minFreq) {
-            binToBand[i] = 0;
-        } else if (freq > maxFreq) {
-            binToBand[i] = NUM_BANDS - 1;
-        } else {
-            // Logarithmic mapping
-            float logFreq = log10f(freq);
-            float logMin = log10f(minFreq);
-            float logMax = log10f(maxFreq);
-            float normalized = (logFreq - logMin) / (logMax - logMin);
-            binToBand[i] = (int)(normalized * (NUM_BANDS - 1) + 0.5f);
-            
-            // Clamp to valid range
-            if (binToBand[i] < 0) binToBand[i] = 0;
-            if (binToBand[i] >= NUM_BANDS) binToBand[i] = NUM_BANDS - 1;
-        }
-    }
-
-    // Precomputed optimizations are ready - no additional initialization needed
-    Serial.println("Spectrum initialized with precomputed optimizations");
-}
-
-// Process one channel's FFT bins into band values
-static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
-                          float *peakValues, int *peakHoldCount, int halfH)
-{
-    float newBands[NUM_BANDS] = {0};
-    int   bandCounts[NUM_BANDS] = {0};
-    int   maxBin = SAMPLES / 2;
-
-    // Use precomputed bin-to-band mapping (safe optimization - eliminates expensive log10f calls)
-    int lookupSize = 256;  // Match reduced array size
-    for (int i = 1; i < maxBin && i < lookupSize; i++) {
-        int band = binToBand[i];
-        if (band < 0 || band >= NUM_BANDS) continue;
-        
-        newBands[band] += (float)vReal[i];
-        bandCounts[band]++;
+        bandValuesL[i] = 0;
+        bandValuesR[i] = 0;
     }
     
-    // For remaining bins, use simplified mapping
-    for (int i = lookupSize; i < maxBin; i++) {
-        int band = (i * NUM_BANDS) / maxBin;  // Simple linear mapping
-        if (band >= NUM_BANDS) band = NUM_BANDS - 1;
-        newBands[band] += (float)vReal[i];
-        bandCounts[band]++;
-    }
-
-    for (int i = 0; i < NUM_BANDS; i++) {
-        float val = 0;
-        if (bandCounts[i] > 0) {
-            val = newBands[i] / bandCounts[i];
-        }
-
-        // Scale to half-screen height (each channel gets half)
-        // Divisor controlled by settings.adc_sensitivity (adjustable via Web Serial UI)
-        float divisor = settings.adc_sensitivity;
-        if (divisor < 1.0f) divisor = 1.0f;
-        val = val / divisor;
-        if (val > halfH) val = halfH;
-
-        // Exponential smoothing (tunable via settings)
-        float smooth = settings.band_smoothing;
-        if (smooth < 0.0f) smooth = 0.0f;
-        if (smooth > 0.99f) smooth = 0.99f;
-        bandSmoothed[i] = bandSmoothed[i] * smooth + val * (1.0f - smooth);
-        bandValues[i] = bandSmoothed[i];
-
-        // Peak detection with hold & fall (tunable via settings)
-        if (bandValues[i] > peakValues[i]) {
-            peakValues[i] = bandValues[i];
-            peakHoldCount[i] = (int)settings.peak_hold_frames;
-        } else {
-            if (peakHoldCount[i] > 0) {
-                peakHoldCount[i]--;
-            } else {
-                peakValues[i] -= settings.peak_fall_rate;
-                if (peakValues[i] < 0) peakValues[i] = 0;
-            }
-        }
-    }
+    Serial.println("Minimal spectrum FFT initialized");
 }
 
-void spectrum_compute_fft()
-{
-    int halfH = SCREEN_HEIGHT / 2;
-
-    // Left channel FFT - ArduinoFFT with precomputed Hann window optimization
-    for (int i = 0; i < SAMPLES; i++) {
-        vRealL[i] *= hannWindow[i];  // Apply precomputed window
-    }
+void spectrum_compute_fft(void) {
+    // Left channel FFT
     FFT_L.windowing(vRealL, SAMPLES, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
     FFT_L.compute(vRealL, vImagL, SAMPLES, FFT_FORWARD);
     FFT_L.complexToMagnitude(vRealL, vImagL, SAMPLES);
-    process_bands(vRealL, bandValuesL, bandSmoothedL, peakValuesL, peakHoldCountL, halfH);
-
-    // Right channel FFT - ArduinoFFT with precomputed Hann window optimization
-    for (int i = 0; i < SAMPLES; i++) {
-        vRealR[i] *= hannWindow[i];  // Apply precomputed window
-    }
+    
+    // Right channel FFT
     FFT_R.windowing(vRealR, SAMPLES, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
     FFT_R.compute(vRealR, vImagR, SAMPLES, FFT_FORWARD);
     FFT_R.complexToMagnitude(vRealR, vImagR, SAMPLES);
-    process_bands(vRealR, bandValuesR, bandSmoothedR, peakValuesR, peakHoldCountR, halfH);
-}
-
-// Color gradient: green → yellow → red based on height ratio
-static uint16_t barColor(int y, int maxH)
-{
-    float ratio = (float)y / (float)maxH;
-    if (ratio < 0.5f) {
-        uint8_t r = (uint8_t)(ratio * 2.0f * 255);
-        uint8_t g = 255;
-        uint8_t b = 0;
-        return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-    } else {
-        uint8_t r = 255;
-        uint8_t g = (uint8_t)((1.0f - (ratio - 0.5f) * 2.0f) * 255);
-        uint8_t b = 0;
-        return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-    }
-}
-
-void spectrum_draw_bars(TFT_eSprite &spr)
-{
-    int centerY = SCREEN_HEIGHT / 2;
-    int halfH   = SCREEN_HEIGHT / 2;
-    int barWidth = (SCREEN_WIDTH - 2) / NUM_BANDS;
-    int gap = 2;
-    int effectiveBar = barWidth - gap;
-    if (effectiveBar < 1) effectiveBar = 1;
-    int startX = (SCREEN_WIDTH - (barWidth * NUM_BANDS)) / 2;
-
-    // Center line
-    spr.drawFastHLine(0, centerY, SCREEN_WIDTH, 0x2945);
-
+    
+    // Convert FFT bins to frequency bands (simplified)
+    int halfSamples = SAMPLES / 2;
     for (int i = 0; i < NUM_BANDS; i++) {
-        int x = startX + i * barWidth;
-
-        // ── Left channel: bars grow UPWARD from center ──
-        int barHL = (int)bandValuesL[i];
-        if (barHL < 0) barHL = 0;
-        if (barHL > halfH) barHL = halfH;
-
-        for (int y = 0; y < barHL; y++) {
-            uint16_t col = barColor(y, halfH);
-            spr.drawFastHLine(x, centerY - 1 - y, effectiveBar, col);
+        int startBin = i * halfSamples / NUM_BANDS;
+        int endBin = (i + 1) * halfSamples / NUM_BANDS;
+        
+        float sumL = 0, sumR = 0;
+        int count = 0;
+        
+        for (int bin = startBin; bin < endBin && bin < halfSamples; bin++) {
+            sumL += vRealL[bin];
+            sumR += vRealR[bin];
+            count++;
         }
-
-        int peakYL = (int)peakValuesL[i];
-        if (peakYL > 0 && peakYL < halfH) {
-            spr.drawFastHLine(x, centerY - 1 - peakYL, effectiveBar, TFT_WHITE);
-        }
-
-        // ── Right channel: bars grow DOWNWARD from center ──
-        int barHR = (int)bandValuesR[i];
-        if (barHR < 0) barHR = 0;
-        if (barHR > halfH) barHR = halfH;
-
-        for (int y = 0; y < barHR; y++) {
-            uint16_t col = barColor(y, halfH);
-            spr.drawFastHLine(x, centerY + 1 + y, effectiveBar, col);
-        }
-
-        int peakYR = (int)peakValuesR[i];
-        if (peakYR > 0 && peakYR < halfH) {
-            spr.drawFastHLine(x, centerY + 1 + peakYR, effectiveBar, TFT_WHITE);
+        
+        if (count > 0) {
+            bandValuesL[i] = sumL / count;
+            bandValuesR[i] = sumR / count;
         }
     }
-
-    // Channel labels
-    spr.setTextColor(TFT_CYAN, TFT_BLACK);
-    spr.setTextDatum(TL_DATUM);
-    spr.drawString("L", 2, 2, 1);
-    spr.setTextDatum(BL_DATUM);
-    spr.drawString("R", 2, SCREEN_HEIGHT - 2, 1);
 }
