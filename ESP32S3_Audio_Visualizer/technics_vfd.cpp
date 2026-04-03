@@ -247,12 +247,22 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
 
         // Dirty check
         if (lit == vu_last_seg[ch] && !peak_fading) continue;
-        vu_last_seg[ch] = lit;
-
-        // Draw VU bar into sprite
+        
+        // Draw VU bar into sprite - only changed segments
         int bar_y = y_pos[ch];
+        
+        // Find the range of segments that changed
+        int oldLit = vu_last_seg[ch];
+        vu_last_seg[ch] = lit;
+        int startSeg = (lit < oldLit) ? lit : oldLit;
+        int endSeg = (lit > oldLit) ? lit + 1 : oldLit + 1;  // +1 to include leading edge
+        
+        // Clamp bounds
+        if (startSeg < 0) startSeg = 0;
+        if (endSeg > VU_MAX_SEGS) endSeg = VU_MAX_SEGS;
 
-        for (int seg = 0; seg < VU_MAX_SEGS; seg++) {
+        // Redraw only the changed segment range
+        for (int seg = startSeg; seg < endSeg; seg++) {
             int sx = VU_X0 + seg * (VU_SEG_W + VU_SEG_GAP);
 
             if (seg < lit) {
@@ -270,7 +280,7 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
             }
         }
 
-        // Peak hold dot
+        // Peak hold dot (only if changed)
         if ((peak_active || peak_fading) && peak_seg > 0 && peak_seg < VU_MAX_SEGS) {
             int px = VU_X0 + peak_seg * (VU_SEG_W + VU_SEG_GAP);
             bool half = peak_fading;
