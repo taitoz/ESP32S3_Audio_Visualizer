@@ -121,9 +121,12 @@ static VisMode lastDrawnMode = VIS_MODE_COUNT;  // Force first draw
 // ─── Core 1 Task: Audio + FFT + Display ─────────────────────────────────────
 void audioDisplayTask(void *param)
 {
+    // Add this task to watchdog monitoring
+    esp_task_wdt_add(NULL);
     lastFpsTime = millis();
 
     for (;;) {
+        esp_task_wdt_reset(); // Feed watchdog at start of each loop
         unsigned long loopStart = millis();
         
         // Handle mode switch from touch (safe — only this task touches display)
@@ -281,15 +284,7 @@ void setup()
     lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
     delay(1500);
 
-    // Initialize watchdog with 10 second timeout
-    esp_task_wdt_config_t wdt_config = {
-        .timeout_ms = 10000,
-        .idle_core_mask = (1 << 0) | (1 << 1),  // Both cores
-        .trigger_panic = true,
-    };
-    esp_task_wdt_init(&wdt_config);
-    esp_task_wdt_add(NULL);
-
+    
     // Initialize Technics VFD module (uses main sprite for rendering)
     technics_vfd_init(tft);
 
@@ -304,8 +299,9 @@ void setup()
     Serial.println("Ready. Touch to cycle: EQ -> VU");
 }
 
-// ─── Loop (unused — work is done in FreeRTOS tasks) ─────────────────────────
+// ─── Loop (empty to prevent loopTask watchdog timeout) ─────────────────────
 void loop()
 {
-    vTaskDelay(portMAX_DELAY);  // suspend loop task forever
+    // EMPTY. Let system feed watchdog for loopTask
+    vTaskDelay(pdMS_TO_TICKS(100));
 }
