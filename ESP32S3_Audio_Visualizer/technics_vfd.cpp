@@ -290,6 +290,9 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
         // Push only this bar (176x12) instead of full frame (640x180)
         int bar_y = y_pos[ch];
         lcd_PushColors_rotated_90(VU_X0, bar_y, VU_BAR_W, VU_SEG_H, (uint16_t*)vuSprite->getPointer());
+        
+        // Critical: yield after each bar push to reset watchdog
+        vTaskDelay(pdMS_TO_TICKS(1));
 
     }
     // No push here — caller pushes full frame after FPS overlay
