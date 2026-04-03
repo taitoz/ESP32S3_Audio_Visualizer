@@ -218,7 +218,7 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
     
     // Rate limit VU updates to prevent watchdog timeout
     static unsigned long lastVUUpdate = 0;
-    if (now - lastVUUpdate < 66) return;  // ~15 FPS max (66ms frame time)
+    if (now - lastVUUpdate < 200) return;  // ~5 FPS max (200ms frame time)
     lastVUUpdate = now;
 
     float rms_in[2] = {rmsL, rmsR};
