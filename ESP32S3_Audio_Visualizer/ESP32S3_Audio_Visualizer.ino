@@ -36,6 +36,7 @@
 #include "settings.h"
 #include "serial_cmd.h"
 #include "light_sensor.h"
+#include "esp_task_wdt.h"
 
 // ─── Display & Sprite ───────────────────────────────────────────────────────
 TFT_eSPI tft = TFT_eSPI();
@@ -123,6 +124,8 @@ void audioDisplayTask(void *param)
     lastFpsTime = millis();
 
     for (;;) {
+        unsigned long loopStart = millis();
+        
         // Handle mode switch from touch (safe — only this task touches display)
         if (pendingModeSwitch) {
             pendingModeSwitch = false;
@@ -193,11 +196,13 @@ void audioDisplayTask(void *param)
                     lastPrint = now;
                 }
             }
-            
-            // Critical: yield after each frame to reset watchdog
-            vTaskDelay(pdMS_TO_TICKS(1));
         }
-        vTaskDelay(1);  // yield when no audio data available
+        
+        // Frame rate limiting to ~30 FPS (33ms max frame time)
+        unsigned long elapsed = millis() - loopStart;
+        if (elapsed < 33) {
+            vTaskDelay(pdMS_TO_TICKS(33 - elapsed));
+        }
     }
 }
 
@@ -275,6 +280,10 @@ void setup()
     sprite.drawString("Technics VFD Legacy", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 10, 1);
     lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
     delay(1500);
+
+    // Initialize watchdog with 10 second timeout
+    esp_task_wdt_init(10, true);
+    esp_task_wdt_add(NULL);
 
     // Initialize Technics VFD module (uses main sprite for rendering)
     technics_vfd_init(tft);

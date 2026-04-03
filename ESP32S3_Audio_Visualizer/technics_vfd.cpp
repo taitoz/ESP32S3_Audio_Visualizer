@@ -215,16 +215,7 @@ void technics_vfd_draw_eq(TFT_eSPI &tft, const float *bands, int numBands) {
 void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
     if (!inited) return;
     
-    // DEBUG: Check stack watermark and heap to detect overflow/corruption
-    static unsigned long lastCheck = 0;
-    unsigned long now = millis();
-    if (now - lastCheck >= 1000) {
-        UBaseType_t stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
-        size_t freeHeap = ESP.getFreeHeap();
-        Serial.printf("VU - Stack: %u, Heap: %u\\n", stackHighWaterMark, freeHeap);
-        lastCheck = now;
-    }
-    
+        
     
     float rms_in[2] = {rmsL, rmsR};
     int   y_pos[2]  = {VU_Y_L, VU_Y_R};
