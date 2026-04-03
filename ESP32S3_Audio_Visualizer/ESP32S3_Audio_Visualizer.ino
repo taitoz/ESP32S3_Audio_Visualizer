@@ -282,7 +282,12 @@ void setup()
     delay(1500);
 
     // Initialize watchdog with 10 second timeout
-    esp_task_wdt_init(10, true);
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = 10000,
+        .idle_core_mask = (1 << 0) | (1 << 1),  // Both cores
+        .trigger_panic = true,
+    };
+    esp_task_wdt_init(&wdt_config);
     esp_task_wdt_add(NULL);
 
     // Initialize Technics VFD module (uses main sprite for rendering)
