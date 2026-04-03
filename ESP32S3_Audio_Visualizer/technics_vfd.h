@@ -33,15 +33,15 @@
 #define EQ_SPRITE_H       ((EQ_SEG_H + EQ_SEG_GAP) * EQ_MAX_SEGS)
 
 // ─── VU Mode (RS-TR373): 2 horizontal bars ──────────────────────────────────
-#define VU_SEG_W          20       // Segment width (wider for 8 segments)
+#define VU_SEG_W          35       // Segment width (wider for full screen)
 #define VU_SEG_H          12       // Segment height
 #define VU_SEG_GAP        2        // Gap between segments
-#define VU_MAX_SEGS       8        // Max segments per bar (8 wide segments)
-#define VU_BAR_W          ((VU_SEG_W + VU_SEG_GAP) * VU_MAX_SEGS)  // ~176px total
-#define VU_X0             80       // Left edge of bars
+#define VU_MAX_SEGS       16       // Max segments per bar (more segments for better resolution)
+#define VU_BAR_W          ((VU_SEG_W + VU_SEG_GAP) * VU_MAX_SEGS)  // ~592px total (almost full width)
+#define VU_X0             24       // Left edge of bars (centered on 640px screen)
 #define VU_Y_L            65       // Left channel Y
 #define VU_Y_R            105      // Right channel Y
-#define VU_0DB_SEG        6        // 0dB mark at segment 6 (~75% of 8)
+#define VU_0DB_SEG        12       // 0dB mark at segment 12 (~75% of 16)
 
 // ─── Peak Hold ──────────────────────────────────────────────────────────────
 #define PEAK_HOLD_MS      500

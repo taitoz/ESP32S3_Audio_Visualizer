@@ -51,7 +51,7 @@ static inline uint16_t vfd_color_vu(int seg, int threshold, bool half) {
 
 // ─── Draw Programmatic EQ Background into sprite ────────────────────────────
 void technics_vfd_draw_bg_eq(TFT_eSPI &tft) {
-    // sprite.fillSprite(VFD_BG);  // Will be replaced by JPG background
+    sprite.fillSprite(TFT_BLACK);  // ОБЯЗАТЕЛЬНО: очищаем весь буфер кадра
 
     // Vertical guide lines on sides of each band
     // for (int b = 0; b < EQ_BANDS; b++) {
@@ -76,7 +76,7 @@ void technics_vfd_draw_bg_eq(TFT_eSPI &tft) {
 
 // ─── Draw Programmatic VU Background into sprite ────────────────────────────
 void technics_vfd_draw_bg_vu(TFT_eSPI &tft) {
-    // sprite.fillSprite(VFD_BG);  // Will be replaced by JPG background
+    sprite.fillSprite(TFT_BLACK);  // ОБЯЗАТЕЛЬНО: очищаем весь буфер кадра
 
     // Channel labels and dB scale - now embedded in JPG background
     // Grid lines only
@@ -274,7 +274,7 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
             vuSprite->fillRect(px, 0, VU_SEG_W, VU_SEG_H, vfd_color_vu(peak_seg, VU_0DB_SEG, half));
         }
         
-        // Push only this bar (176x12) instead of full frame (640x180)
+        // Push only this bar (592x12) instead of full frame (640x180)
         int bar_y = y_pos[ch];
         lcd_PushColors_rotated_90(VU_X0, bar_y, VU_BAR_W, VU_SEG_H, (uint16_t*)vuSprite->getPointer());
         

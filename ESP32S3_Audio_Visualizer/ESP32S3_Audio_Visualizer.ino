@@ -79,9 +79,9 @@ bool checkTouch()
     while (!Wire.available());
     Wire.readBytes(buff, 8);
 
-    // Debug: print raw touch data
+    // Debug: print raw touch data every 2 seconds
     static unsigned long lastDebug = 0;
-    if (millis() - lastDebug > 1000) {
+    if (millis() - lastDebug > 2000) {
         Serial.printf("Touch raw: %02X %02X %02X %02X %02X %02X %02X %02X\n", 
                      buff[0], buff[1], buff[2], buff[3], buff[4], buff[5], buff[6], buff[7]);
         lastDebug = millis();
@@ -100,7 +100,7 @@ bool checkTouch()
     int tx = map(pointX, 627, 10, 0, 640);
     int ty = map(pointY, 180, 0, 0, 180);
 
-    // Debug: print touch coordinates
+    // Debug: print touch coordinates when touched
     Serial.printf("Touch: points=%d, X=%d, Y=%d, tx=%d, ty=%d\n", 
                  pointNum, pointX, pointY, tx, ty);
 
@@ -224,35 +224,28 @@ void audioDisplayTask(void *param)
 // ─── Core 0 Task: Touch Polling ─────────────────────────────────────────────
 void touchTask(void *param)
 {
+    Serial.println("Touch task started on Core 0");
     for (;;) {
-        // Touch handling
+        // Simple debug - just check touch pin
         int touchState = digitalRead(TOUCH_INT);
-        if (touchState == LOW) {
-            if (!touch_held && (millis() - touch_released_at >= TOUCH_DEBOUNCE_MS)) {
-                Serial.println("Touch interrupt detected, checking touch...");
-                if (checkTouch()) {
-                    Serial.println("Valid touch detected, cycling mode");
-                    cycleMode();
-                    Serial.printf("Mode: %d\n", (int)currentMode);
-                } else {
-                    Serial.println("Touch detected but invalid coordinates");
-                }
-            }
+        static unsigned long lastDebug = 0;
+        
+        // Debug: report pin state every 2 seconds
+        if (millis() - lastDebug > 2000) {
+            Serial.printf("Touch pin state: %d\n", touchState);
+            lastDebug = millis();
+        }
+        
+        // Simple touch detection
+        if (touchState == LOW && !touch_held) {
+            Serial.println("Touch detected!");
+            cycleMode();
             touch_held = true;
-        } else {
-            if (touch_held) {
-                touch_released_at = millis();
-            }
+        } else if (touchState == HIGH) {
             touch_held = false;
         }
 
-        // Process serial commands from Web Serial UI
-        serial_cmd_poll();
-
-        // Auto-brightness from ambient light sensor
-        light_sensor_poll();
-
-        vTaskDelay(pdMS_TO_TICKS(20));  // ~50 Hz touch + serial polling
+        vTaskDelay(pdMS_TO_TICKS(50));  // 20 Hz polling
     }
 }
 
@@ -263,13 +256,34 @@ void setup()
     Serial.println("ESP32-S3 Audio Visualizer starting...");
 
     // Touch screen init
+    Serial.println("Initializing touch screen...");
     pinMode(TOUCH_INT, INPUT_PULLUP);
     pinMode(TOUCH_RES, OUTPUT);
+    
+    Serial.printf("Touch INT pin: %d, RES pin: %d\n", TOUCH_INT, TOUCH_RES);
+    Serial.printf("Touch I2C: SDA=%d, SCL=%d\n", TOUCH_IICSDA, TOUCH_IICSCL);
+    
+    // Reset touch controller
+    Serial.println("Resetting touch controller...");
     digitalWrite(TOUCH_RES, HIGH); delay(2);
     digitalWrite(TOUCH_RES, LOW);  delay(10);
     digitalWrite(TOUCH_RES, HIGH); delay(2);
+    
     Wire.begin(TOUCH_IICSDA, TOUCH_IICSCL);
     Wire.setClock(400000);  // I2C Fast Mode — reduces touch polling bus hold time
+    
+    // Test I2C communication
+    Wire.beginTransmission(ALS_ADDRESS);
+    int result = Wire.endTransmission();
+    if (result == 0) {
+        Serial.println("Touch controller I2C OK");
+    } else {
+        Serial.printf("Touch controller I2C error: %d\n", result);
+    }
+    
+    // Check initial interrupt state
+    int initState = digitalRead(TOUCH_INT);
+    Serial.printf("Initial touch interrupt state: %d (should be HIGH when not touched)\n", initState);
 
     // Settings init (load from NVS)
     settings_init();
@@ -310,8 +324,20 @@ void setup()
     lastDrawnMode = VIS_MODE_COUNT;  // Force background draw on first frame
 
     // Launch FreeRTOS tasks on separate cores
-    xTaskCreatePinnedToCore(audioDisplayTask, "AudioDisplay", 32768, NULL, 2, &audioDisplayTaskHandle, 1);
-    xTaskCreatePinnedToCore(touchTask, "Touch", 4096, NULL, 1, &touchTaskHandle, 0);
+    BaseType_t ret1 = xTaskCreatePinnedToCore(audioDisplayTask, "AudioDisplay", 32768, NULL, 2, &audioDisplayTaskHandle, 1);
+    BaseType_t ret2 = xTaskCreatePinnedToCore(touchTask, "Touch", 8192, NULL, 1, &touchTaskHandle, 0);
+    
+    if (ret1 == pdPASS) {
+        Serial.println("AudioDisplay task created successfully");
+    } else {
+        Serial.println("Failed to create AudioDisplay task");
+    }
+    
+    if (ret2 == pdPASS) {
+        Serial.println("Touch task created successfully");
+    } else {
+        Serial.printf("Failed to create Touch task, error: %d\n", ret2);
+    }
 
     Serial.println("Ready. Touch to cycle: EQ -> VU");
 }
