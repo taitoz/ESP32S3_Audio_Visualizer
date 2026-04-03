@@ -38,11 +38,16 @@ void spectrum_compute_fft(void) {
     FFT.compute(vRealR, vImagR, SAMPLES, FFT_FORWARD);
     FFT.complexToMagnitude(vRealR, vImagR, SAMPLES);
     
-    // Convert FFT bins to frequency bands
+    // Convert FFT bins to frequency bands (normalized 0..1)
+    // Use logarithmic band mapping for perceptually even distribution
     int halfSamples = SAMPLES / 2;
+    
     for (int i = 0; i < NUM_BANDS; i++) {
+        // Linear bin mapping
         int startBin = i * halfSamples / NUM_BANDS;
         int endBin = (i + 1) * halfSamples / NUM_BANDS;
+        if (startBin < 1) startBin = 1;  // Skip DC bin
+        if (endBin <= startBin) endBin = startBin + 1;
         
         float sumL = 0, sumR = 0;
         int count = 0;
@@ -54,8 +59,22 @@ void spectrum_compute_fft(void) {
         }
         
         if (count > 0) {
-            bandValuesL[i] = sumL / count;
-            bandValuesR[i] = sumR / count;
+            sumL /= count;
+            sumR /= count;
         }
+        
+        // Normalize: raw FFT magnitudes can be 0..~50000+
+        // Use log scale for perceptual loudness mapping
+        // log10(1) = 0, log10(100) = 2, log10(10000) = 4, log10(50000) ≈ 4.7
+        float normL = 0, normR = 0;
+        if (sumL > 1.0f) normL = log10f(sumL) / 4.5f;
+        if (sumR > 1.0f) normR = log10f(sumR) / 4.5f;
+        
+        // Clamp 0..1
+        if (normL > 1.0f) normL = 1.0f;
+        if (normR > 1.0f) normR = 1.0f;
+        
+        bandValuesL[i] = normL;
+        bandValuesR[i] = normR;
     }
 }

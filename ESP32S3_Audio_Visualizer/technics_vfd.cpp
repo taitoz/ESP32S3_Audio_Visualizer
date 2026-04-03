@@ -35,14 +35,6 @@ static inline uint16_t vfd_color(int seg, int threshold, bool half) {
     return half ? VFD_AMBER_HALF : VFD_AMBER_FULL;
 }
 
-// Push entire framebuffer to display
-// NOTE: lcd_PushColors_rotated_90 does software rotation into qBuffer.
-// Partial stripes crash because the rotation reads outside bounds.
-// Full-frame push is the only safe approach on this hardware.
-static void push_frame() {
-    lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t *)sprite.getPointer());
-}
-
 // ─── Draw Programmatic EQ Background into sprite ────────────────────────────
 void technics_vfd_draw_bg_eq(TFT_eSPI &tft) {
     sprite.fillSprite(VFD_BG);
@@ -67,8 +59,7 @@ void technics_vfd_draw_bg_eq(TFT_eSPI &tft) {
         sprite.drawString(labels[b], cx, EQ_Y_BOTTOM + 4, 1);
     }
 
-    // Push full screen
-    lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t *)sprite.getPointer());
+    // No push here — caller pushes full frame
 }
 
 // ─── Draw Programmatic VU Background into sprite ────────────────────────────
@@ -99,8 +90,7 @@ void technics_vfd_draw_bg_vu(TFT_eSPI &tft) {
     sprite.drawFastHLine(VU_X0, VU_Y_R - 1, VU_BAR_W, VFD_GRID);
     sprite.drawFastHLine(VU_X0, VU_Y_R + VU_SEG_H + 1, VU_BAR_W, VFD_GRID);
 
-    // Push full screen
-    lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t *)sprite.getPointer());
+    // No push here — caller pushes full frame
 }
 
 // ─── Init ───────────────────────────────────────────────────────────────────
@@ -122,6 +112,19 @@ void technics_vfd_init(TFT_eSPI &tft) {
 
     inited = true;
     Serial.printf("Technics VFD init OK. Free heap: %u\n", ESP.getFreeHeap());
+}
+
+// ─── Reset state (call on mode switch to avoid stale dirty-check data) ──────
+void technics_vfd_reset_state() {
+    for (int i = 0; i < EQ_BANDS; i++) {
+        eq_last_full[i] = -1;
+        eq_last_half[i] = -1;
+    }
+    for (int i = 0; i < 2; i++) {
+        vu_last_seg[i] = -1;
+        vu_peak_seg[i] = 0;
+        vu_peak_time[i] = 0;
+    }
 }
 
 // ─── EQ Update (Dirty Rectangles — draw into sprite, push dirty stripes) ───

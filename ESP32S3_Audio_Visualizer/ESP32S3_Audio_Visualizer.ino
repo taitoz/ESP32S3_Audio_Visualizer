@@ -131,8 +131,10 @@ void audioDisplayTask(void *param)
 
         // Redraw background when mode changes
         if (currentMode != lastDrawnMode) {
+            technics_vfd_reset_state();
             if (currentMode == VIS_EQ) technics_vfd_draw_bg_eq(tft);
             else                        technics_vfd_draw_bg_vu(tft);
+            lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
             lastDrawnMode = currentMode;
         }
 

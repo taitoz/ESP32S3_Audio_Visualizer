@@ -51,3 +51,4 @@ void technics_vfd_draw_eq(TFT_eSPI &tft, const float *bands, int numBands);
 void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR);
 void technics_vfd_draw_bg_eq(TFT_eSPI &tft);
 void technics_vfd_draw_bg_vu(TFT_eSPI &tft);
+void technics_vfd_reset_state();
