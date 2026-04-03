@@ -273,7 +273,7 @@ void setup()
     lastDrawnMode = VIS_MODE_COUNT;  // Force background draw on first frame
 
     // Launch FreeRTOS tasks on separate cores
-    xTaskCreatePinnedToCore(audioDisplayTask, "AudioDisplay", 16384, NULL, 2, &audioDisplayTaskHandle, 1);
+    xTaskCreatePinnedToCore(audioDisplayTask, "AudioDisplay", 32768, NULL, 2, &audioDisplayTaskHandle, 1);
     xTaskCreatePinnedToCore(touchTask, "Touch", 4096, NULL, 1, &touchTaskHandle, 0);
 
     Serial.println("Ready. Touch to cycle: EQ -> VU");
