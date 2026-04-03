@@ -1,5 +1,6 @@
 #include "technics_vfd.h"
 #include "AXS15231B.h"
+#include <TJpg_Decoder.h>
 
 /*******************************************************************************
  * Technics Authentic VFD - Implementation
@@ -40,66 +41,62 @@ static inline uint16_t vfd_color_eq(int seg, int threshold, bool half) {
     return half ? VFD_CYAN_HALF : VFD_CYAN_FULL;
 }
 
-// VU color mapping: amber (all levels)
+// VU color mapping: amber for peak zone (>= 0dB), cyan for normal levels
 static inline uint16_t vfd_color_vu(int seg, int threshold, bool half) {
-    if (seg >= threshold) return half ? VFD_AMBER_HALF : VFD_AMBER_FULL;
+    if (seg >= VU_0DB_SEG) {  // Peak zone (+3, +6, +8 dB)
+        return half ? VFD_AMBER_HALF : VFD_AMBER_FULL;
+    }
     return half ? VFD_CYAN_HALF : VFD_CYAN_FULL;
 }
 
 // ─── Draw Programmatic EQ Background into sprite ────────────────────────────
 void technics_vfd_draw_bg_eq(TFT_eSPI &tft) {
-    sprite.fillSprite(VFD_BG);
+    // sprite.fillSprite(VFD_BG);  // Will be replaced by JPG background
 
     // Vertical guide lines on sides of each band
-    for (int b = 0; b < EQ_BANDS; b++) {
-        int x = EQ_X0 + b * (EQ_SEG_W + EQ_BAND_GAP);
-        sprite.drawFastVLine(x - 1, EQ_Y_BOTTOM - EQ_SPRITE_H, EQ_SPRITE_H, VFD_GRID);
-        sprite.drawFastVLine(x + EQ_SEG_W, EQ_Y_BOTTOM - EQ_SPRITE_H, EQ_SPRITE_H, VFD_GRID);
-    }
+    // for (int b = 0; b < EQ_BANDS; b++) {
+    //     int x = EQ_X0 + b * (EQ_SEG_W + EQ_BAND_GAP);
+    //     sprite.drawFastVLine(x - 1, EQ_Y_BOTTOM - EQ_SPRITE_H, EQ_SPRITE_H, VFD_GRID);
+    //     sprite.drawFastVLine(x + EQ_SEG_W, EQ_Y_BOTTOM - EQ_SPRITE_H, EQ_SPRITE_H, VFD_GRID);
+    // }
 
     // Horizontal 0dB line at ~80% height
-    int zeroY = EQ_Y_BOTTOM - (int)(EQ_SPRITE_H * 0.8f);
-    sprite.drawFastHLine(EQ_X0 - 5, zeroY, EQ_BANDS * (EQ_SEG_W + EQ_BAND_GAP), VFD_GRID);
+    // int zeroY = EQ_Y_BOTTOM - (int)(EQ_SPRITE_H * 0.8f);
+    // sprite.drawFastHLine(EQ_X0 - 5, zeroY, EQ_BANDS * (EQ_SEG_W + EQ_BAND_GAP), VFD_GRID);
 
-    // Frequency labels
-    const char *labels[] = {"63", "160", "400", "1k", "2.5k", "6.3k", "10k", "16k"};
-    sprite.setTextColor(VFD_GRID, VFD_BG);
-    sprite.setTextDatum(TC_DATUM);
-    for (int b = 0; b < EQ_BANDS; b++) {
-        int cx = EQ_X0 + b * (EQ_SEG_W + EQ_BAND_GAP) + EQ_SEG_W / 2;
-        sprite.drawString(labels[b], cx, EQ_Y_BOTTOM + 4, 1);
-    }
+    // Frequency labels - now embedded in JPG background, no text drawing needed
+    // If needed, can use built-in font: sprite.drawString("63", cx, EQ_Y_BOTTOM + 4, 1);
+
+    // TODO: Load JPG background here
+    // sprite.pushImage(x, y, width, height, image_data);
+    // or tft.pushImage for direct to display
 
     // No push here — caller pushes full frame
 }
 
 // ─── Draw Programmatic VU Background into sprite ────────────────────────────
 void technics_vfd_draw_bg_vu(TFT_eSPI &tft) {
-    sprite.fillSprite(VFD_BG);
+    // sprite.fillSprite(VFD_BG);  // Will be replaced by JPG background
 
-    // Channel labels
-    sprite.setTextColor(VFD_CYAN_FULL, VFD_BG);
-    sprite.setTextDatum(MR_DATUM);
-    sprite.drawString("L", VU_X0 - 10, VU_Y_L + VU_SEG_H / 2, 2);
-    sprite.drawString("R", VU_X0 - 10, VU_Y_R + VU_SEG_H / 2, 2);
-
-    // dB scale marks
-    sprite.setTextColor(VFD_GRID, VFD_BG);
-    sprite.setTextDatum(TC_DATUM);
-    const char *db_labels[] = {"-20", "-10", "-5", "0", "+3", "+6"};
-    const int db_segs[] = {0, 2, 4, VU_0DB_SEG, 7, VU_MAX_SEGS - 1};
-    for (int i = 0; i < 6; i++) {
-        int x = VU_X0 + db_segs[i] * (VU_SEG_W + VU_SEG_GAP);
-        sprite.drawFastVLine(x, VU_Y_L - 8, 5, VFD_GRID);
-        sprite.drawFastVLine(x, VU_Y_R + VU_SEG_H + 3, 5, VFD_GRID);
-        sprite.drawString(db_labels[i], x, VU_Y_L - 18, 1);
-    }
+    // Channel labels and dB scale - now embedded in JPG background
+    // Grid lines only
+    // sprite.setTextColor(VFD_GRID, VFD_BG);
+    // const int db_segs[] = {0, 2, 4, VU_0DB_SEG, 7, VU_MAX_SEGS - 1};
+    // for (int i = 0; i < 6; i++) {
+    //     int x = VU_X0 + db_segs[i] * (VU_SEG_W + VU_SEG_GAP);
+    //     sprite.drawFastVLine(x, VU_Y_L - 8, 5, VFD_GRID);
+    //     sprite.drawFastVLine(x, VU_Y_R + VU_SEG_H + 3, 5, VFD_GRID);
+    // }
 
     // Horizontal guide lines
-    sprite.drawFastHLine(VU_X0, VU_Y_L - 1, VU_BAR_W, VFD_GRID);
-    sprite.drawFastHLine(VU_X0, VU_Y_L + VU_SEG_H + 1, VU_BAR_W, VFD_GRID);
-    sprite.drawFastHLine(VU_X0, VU_Y_R - 1, VU_BAR_W, VFD_GRID);
-    sprite.drawFastHLine(VU_X0, VU_Y_R + VU_SEG_H + 1, VU_BAR_W, VFD_GRID);
+    // sprite.drawFastHLine(VU_X0, VU_Y_L - 1, VU_BAR_W, VFD_GRID);
+    // sprite.drawFastHLine(VU_X0, VU_Y_L + VU_SEG_H + 1, VU_BAR_W, VFD_GRID);
+    // sprite.drawFastHLine(VU_X0, VU_Y_R - 1, VU_BAR_W, VFD_GRID);
+    // sprite.drawFastHLine(VU_X0, VU_Y_R + VU_SEG_H + 1, VU_BAR_W, VFD_GRID);
+
+    // TODO: Load JPG background here
+    // sprite.pushImage(x, y, width, height, image_data);
+    // or tft.pushImage for direct to display
 
     // No push here — caller pushes full frame
 }

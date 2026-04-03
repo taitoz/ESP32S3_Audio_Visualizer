@@ -1,8 +1,8 @@
 #include "spectrum.h"
-
 #include <arduinoFFT.h>
-
+#include <TFT_eSPI.h>
 #include "pins_config.h"
+#include "settings.h"
 
 
 
@@ -40,11 +40,10 @@ static float bandSmoothedR[NUM_BANDS]  = {0};
 
 
 
-// Two ArduinoFFT objects — one per channel
+// Two ArduinoFFT objects — one per channel (using float for ESP32-S3 performance)
 
-static ArduinoFFT<double> FFT_L(vRealL, vImagL, SAMPLES, SAMPLING_FREQ);
-
-static ArduinoFFT<double> FFT_R(vRealR, vImagR, SAMPLES, SAMPLING_FREQ);
+static ArduinoFFT<float> FFT_L;
+static ArduinoFFT<float> FFT_R;
 
 
 
@@ -70,7 +69,12 @@ void spectrum_init()
 
 // Process one channel's FFT bins into band values
 
-static void process_bands(double *vReal, float *bandValues, float *bandSmoothed,
+// Missing constants - add them
+#define BAND_SMOOTHING    0.7f
+#define PEAK_HOLD_FRAMES  30
+#define PEAK_FALL_RATE    0.5f
+
+static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
 
                           float *peakValues, int *peakHoldCount, int halfH)
 
@@ -188,7 +192,9 @@ void spectrum_compute_fft()
 
     int halfH = SCREEN_HEIGHT / 2;
 
-
+    // Initialize FFT objects with arrays (do this each time since arrays change)
+    FFT_L = ArduinoFFT<float>(vRealL, vImagL, SAMPLES, SAMPLING_FREQ);
+    FFT_R = ArduinoFFT<float>(vRealR, vImagR, SAMPLES, SAMPLING_FREQ);
 
     // Left channel FFT
 

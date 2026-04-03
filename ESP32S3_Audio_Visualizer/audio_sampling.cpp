@@ -18,7 +18,7 @@ float         vImagR[SAMPLES];
 
 static volatile uint16_t sampleIndex = 0;
 static esp_timer_handle_t samplingTimer = NULL;
-static adc_oneshot_unit_handle_t adc_handle = NULL;
+adc_oneshot_unit_handle_t adc_handle = NULL;
 
 // Timer callback — reads both L and R ADC channels per tick
 static void IRAM_ATTR sampling_timer_cb(void* arg)

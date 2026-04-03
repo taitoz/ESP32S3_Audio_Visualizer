@@ -1,14 +1,13 @@
 #include "light_sensor.h"
+#include "audio_sampling.h"
+#include "settings.h"
 #include "esp_adc/adc_oneshot.h"
 
 /*******************************************************************************
  * Ambient Light Sensor — smoothed ADC reading → auto backlight PWM
  * 
- * Uses the same ADC1 unit as audio sampling. Since audio sampling already
- * initializes ADC1, this module configures only its own channel on the
- * existing unit. However, because adc_oneshot handles are per-unit and
- * audio_sampling owns the handle, we use a simple analogRead() here instead
- * to avoid handle conflicts. analogRead() is fine at 5 Hz polling rate.
+ * Uses the same ADC1 unit and handle as audio sampling. No new unit is created.
+ * The light sensor channel is configured on the existing adc_handle.
  ******************************************************************************/
 
 static float    smoothedVal = 0.0f;
@@ -18,9 +17,16 @@ static uint8_t  computedBrightness = 128;  // default 50% if no sensor
 
 void light_sensor_init()
 {
-    pinMode(LIGHT_SENSOR_PIN, INPUT);
+    // Configure light sensor channel on the existing ADC1 handle
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_11,    // 0–3.3V range (same as audio channels)
+        .bitwidth = ADC_BITWIDTH_12,
+    };
+    adc_oneshot_config_channel(adc_handle, LIGHT_SENSOR_CHANNEL, &chan_cfg);
+
     // Seed the smoother with an initial reading
-    int seed = analogRead(LIGHT_SENSOR_PIN);
+    int seed = 0;
+    adc_oneshot_read(adc_handle, LIGHT_SENSOR_CHANNEL, &seed);
     smoothedVal = (float)seed;
     // If sensor reads near zero (not connected), keep default 50%
     computedBrightness = (seed < 5) ? 128 : settings.brightness;
@@ -37,7 +43,8 @@ void light_sensor_poll()
     lastPollMs = now;
 
     // Read ambient light (0–4095, 12-bit)
-    int raw = analogRead(LIGHT_SENSOR_PIN);
+    int raw = 0;
+    adc_oneshot_read(adc_handle, LIGHT_SENSOR_CHANNEL, &raw);
 
     // Exponential moving average
     smoothedVal = smoothedVal + LIGHT_SENSOR_SMOOTH * ((float)raw - smoothedVal);

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include "pins_config.h"
+#include "esp_adc/adc_oneshot.h"
 
 /*******************************************************************************
  * Audio ADC Sampling — Timer-driven double-buffer for FFT (Stereo)
@@ -34,6 +35,9 @@ extern float         vRealR[SAMPLES];  // Right channel FFT input
 extern float         vImagR[SAMPLES];
 extern int16_t       sampleBufferL[2][SAMPLES];
 extern int16_t       sampleBufferR[2][SAMPLES];
+
+// Global ADC handle — can be shared with other modules (e.g., light sensor)
+extern adc_oneshot_unit_handle_t adc_handle;
 
 void audio_sampling_init();
 void audio_sampling_stop();

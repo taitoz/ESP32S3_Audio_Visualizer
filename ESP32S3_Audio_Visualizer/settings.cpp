@@ -5,7 +5,7 @@
  * Settings — NVS persistence using ESP32 Preferences library
  ******************************************************************************/
 
-Settings settings;
+volatile Settings settings;
 static Preferences prefs;
 
 void settings_init()

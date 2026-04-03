@@ -79,6 +79,14 @@ bool checkTouch()
     while (!Wire.available());
     Wire.readBytes(buff, 8);
 
+    // Debug: print raw touch data
+    static unsigned long lastDebug = 0;
+    if (millis() - lastDebug > 1000) {
+        Serial.printf("Touch raw: %02X %02X %02X %02X %02X %02X %02X %02X\n", 
+                     buff[0], buff[1], buff[2], buff[3], buff[4], buff[5], buff[6], buff[7]);
+        lastDebug = millis();
+    }
+
     // Must have at least 1 touch point — otherwise it's not a real touch
     uint8_t pointNum = AXS_GET_POINT_NUM(buff);
     if (pointNum == 0) return false;
@@ -91,6 +99,10 @@ bool checkTouch()
 
     int tx = map(pointX, 627, 10, 0, 640);
     int ty = map(pointY, 180, 0, 0, 180);
+
+    // Debug: print touch coordinates
+    Serial.printf("Touch: points=%d, X=%d, Y=%d, tx=%d, ty=%d\n", 
+                 pointNum, pointX, pointY, tx, ty);
 
     // Valid touch anywhere on screen → mode switch
     if (tx >= 0 && tx <= SCREEN_WIDTH && ty >= 0 && ty <= SCREEN_HEIGHT) {
@@ -214,11 +226,16 @@ void touchTask(void *param)
 {
     for (;;) {
         // Touch handling
-        if (digitalRead(TOUCH_INT) == LOW) {
+        int touchState = digitalRead(TOUCH_INT);
+        if (touchState == LOW) {
             if (!touch_held && (millis() - touch_released_at >= TOUCH_DEBOUNCE_MS)) {
+                Serial.println("Touch interrupt detected, checking touch...");
                 if (checkTouch()) {
+                    Serial.println("Valid touch detected, cycling mode");
                     cycleMode();
                     Serial.printf("Mode: %d\n", (int)currentMode);
+                } else {
+                    Serial.println("Touch detected but invalid coordinates");
                 }
             }
             touch_held = true;
