@@ -105,11 +105,7 @@ void technics_vfd_draw_bg_vu(TFT_eSPI &tft) {
 void technics_vfd_init(TFT_eSPI &tft) {
     if (inited) return;
 
-    // Initialize VU-only sprites for performance
-    vuSpriteL = new TFT_eSprite(&tft);
-    vuSpriteR = new TFT_eSprite(&tft);
-    vuSpriteL->createSprite(VU_BAR_W, VU_SEG_H);
-    vuSpriteR->createSprite(VU_BAR_W, VU_SEG_H);
+    // VU sprites no longer needed - we draw directly in main sprite
     
     for (int i = 0; i < EQ_BANDS; i++) {
         eq_filtered[i] = 0;
@@ -208,13 +204,17 @@ void technics_vfd_draw_eq(TFT_eSPI &tft, const float *bands, int numBands) {
     // No push here — caller pushes full frame after FPS overlay
 }
 
-// ─── VU Update (Dirty Rectangles — draw into sprite, push dirty stripes) ───
+// ─── VU Update (Draw directly in main sprite) ───────────────────────────────
 void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
     if (!inited) return;
     
     unsigned long now = millis();
     float rms_in[2] = {rmsL, rmsR};
     int   y_pos[2]  = {VU_Y_L, VU_Y_R};
+
+    // Clear VU areas in main sprite first
+    sprite.fillRect(VU_X0, VU_Y_L, VU_BAR_W, VU_SEG_H, TFT_BLACK);
+    sprite.fillRect(VU_X0, VU_Y_R, VU_BAR_W, VU_SEG_H, TFT_BLACK);
 
     for (int ch = 0; ch < 2; ch++) {
         float val = rms_in[ch];
@@ -242,45 +242,32 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
             vu_peak_seg[ch] = lit;
         }
 
-        // Dirty check
-        if (lit == vu_last_seg[ch] && !peak_fading) continue;
+        // Draw VU bar directly in main sprite
+        int bar_y = y_pos[ch];
         
-        // Draw VU bar into small sprite - full redraw each frame (fast)
-        TFT_eSprite *vuSprite = (ch == 0) ? vuSpriteL : vuSpriteR;
-        vuSprite->fillSprite(TFT_BLACK);  // Clear with black background
+        // Update last segment tracking
+        vu_last_seg[ch] = lit;
         
         for (int seg = 0; seg < VU_MAX_SEGS; seg++) {
-            int sx = seg * (VU_SEG_W + VU_SEG_GAP);
+            int sx = VU_X0 + seg * (VU_SEG_W + VU_SEG_GAP);
 
             if (seg < lit) {
-                vuSprite->fillRect(sx, 0, VU_SEG_W, VU_SEG_H, vfd_color_vu(seg, VU_0DB_SEG, false));
+                sprite.fillRect(sx, bar_y, VU_SEG_W, VU_SEG_H, vfd_color_vu(seg, VU_0DB_SEG, false));
             } else if (seg == lit) {
                 float frac = vu_filtered[ch] * VU_MAX_SEGS - lit;
                 if (frac > 0.25f) {
                     bool is_full = frac > 0.75f;
-                    vuSprite->fillRect(sx, 0, VU_SEG_W, VU_SEG_H, vfd_color_vu(seg, VU_0DB_SEG, !is_full));
-                } else {
-                    vuSprite->fillRect(sx, 0, VU_SEG_W, VU_SEG_H, TFT_BLACK);
+                    sprite.fillRect(sx, bar_y, VU_SEG_W, VU_SEG_H, vfd_color_vu(seg, VU_0DB_SEG, !is_full));
                 }
-            } else {
-                vuSprite->fillRect(sx, 0, VU_SEG_W, VU_SEG_H, TFT_BLACK);
             }
         }
 
         // Peak hold dot
         if ((peak_active || peak_fading) && peak_seg > 0 && peak_seg < VU_MAX_SEGS) {
-            int px = peak_seg * (VU_SEG_W + VU_SEG_GAP);
+            int px = VU_X0 + peak_seg * (VU_SEG_W + VU_SEG_GAP);
             bool half = peak_fading;
-            vuSprite->fillRect(px, 0, VU_SEG_W, VU_SEG_H, vfd_color_vu(peak_seg, VU_0DB_SEG, half));
+            sprite.fillRect(px, bar_y, VU_SEG_W, VU_SEG_H, vfd_color_vu(peak_seg, VU_0DB_SEG, half));
         }
-        
-        // Push only this bar (592x12) instead of full frame (640x180)
-        int bar_y = y_pos[ch];
-        lcd_PushColors_rotated_90(VU_X0, bar_y, VU_BAR_W, VU_SEG_H, (uint16_t*)vuSprite->getPointer());
-        
-        // Critical: yield after each bar push to reset watchdog
-        vTaskDelay(pdMS_TO_TICKS(1));
-
     }
-    // No push here — caller pushes full frame after FPS overlay
+    // No push here - caller pushes full frame after FPS overlay
 }

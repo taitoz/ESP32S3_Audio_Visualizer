@@ -142,17 +142,13 @@ void audioDisplayTask(void *param)
         if (serialMode < VIS_MODE_COUNT && serialMode != currentMode) {
             currentMode = serialMode;
         }
-        
-        // Emergency auto-switch every 10 seconds
-        static unsigned long lastAutoSwitch = 0;
-        if (millis() - lastAutoSwitch > 10000) {
-            lastAutoSwitch = millis();
-            pendingModeSwitch = true;
-            Serial.println("Auto-switching mode...");
-        }
 
         // Redraw background when mode changes
         if (currentMode != lastDrawnMode) {
+            // Full screen clear to prevent artifacts from previous mode
+            sprite.fillSprite(TFT_BLACK);
+            lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
+            
             technics_vfd_reset_state();
             if (currentMode == VIS_EQ) technics_vfd_draw_bg_eq(tft);
             else                        technics_vfd_draw_bg_vu(tft);
@@ -176,21 +172,11 @@ void audioDisplayTask(void *param)
                 technics_vfd_draw_vu(tft, rmsL, rmsR);
             }
 
-            // FPS overlay into sprite
-            drawFPS();
+            // FPS overlay removed from screen (still in serial log)
 
-            // Push strategy: VU pushes its own bars, EQ pushes full frame
-            if (currentMode == VIS_VU) {
-                // VU mode already pushed its bars in technics_vfd_draw_vu
-                // Only push FPS overlay area
-                uint16_t *buf = (uint16_t *)sprite.getPointer();
-                lcd_PushColors_rotated_90(280, 0, 80, 14, buf);
-                vTaskDelay(pdMS_TO_TICKS(5));  // Give Core 0 I2C access window
-            } else {
-                // EQ mode: push full frame
-                lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
-                vTaskDelay(pdMS_TO_TICKS(5));  // Give Core 0 I2C access window
-            }
+            // Push full frame for both EQ and VU modes
+            lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
+            vTaskDelay(pdMS_TO_TICKS(5));  // Give Core 0 I2C access window
 
             unsigned long frameTime = millis() - frameStart;
 
