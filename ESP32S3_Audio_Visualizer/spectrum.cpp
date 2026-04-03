@@ -1,15 +1,11 @@
 #include "spectrum.h"
-#include <math.h>
-
-#ifndef PI
-#define PI 3.14159265358979323846f
-#endif
+#include <ArduinoFFT.h>
 
 /*******************************************************************************
- * Minimal Spectrum Module - Simple FFT Implementation
+ * Minimal Spectrum Module - ArduinoFFT 2.0.4 Implementation
  * 
- * Provides basic FFT computation for Technics EQ mode without external dependencies.
- * Uses simplified DFT for compatibility and stability.
+ * Provides FFT computation for Technics EQ mode using ArduinoFFT library.
+ * All visualization code removed - only FFT processing remains.
  ******************************************************************************/
 
 // ─── External Variables (from audio_sampling) ───────────────────────────────
@@ -22,30 +18,8 @@ extern float vImagR[SAMPLES];
 float bandValuesL[NUM_BANDS] = {0};
 float bandValuesR[NUM_BANDS] = {0};
 
-// ─── Simple Window Function ─────────────────────────────────────────────────
-static void apply_hamming_window(float *data, int samples) {
-    for (int i = 0; i < samples; i++) {
-        float multiplier = 0.54f - 0.46f * cosf(2.0f * PI * i / (samples - 1));
-        data[i] *= multiplier;
-    }
-}
-
-// ─── Simple DFT (not FFT but sufficient for visualization) ──────────────────
-static void simple_dft(float *realIn, float *realOut, int samples) {
-    for (int k = 0; k < samples / 2; k++) {
-        float sumReal = 0;
-        float sumImag = 0;
-        
-        for (int n = 0; n < samples; n++) {
-            float angle = -2.0f * PI * k * n / samples;
-            sumReal += realIn[n] * cosf(angle);
-            sumImag += realIn[n] * sinf(angle);
-        }
-        
-        // Magnitude
-        realOut[k] = sqrtf(sumReal * sumReal + sumImag * sumImag);
-    }
-}
+// ─── FFT Objects (ArduinoFFT 2.0.4 API) ───────────────────────────────────────
+static ArduinoFFT<float> FFT = ArduinoFFT<float>();
 
 // ─── Public Functions ───────────────────────────────────────────────────────
 
@@ -60,18 +34,17 @@ void spectrum_init(void) {
 }
 
 void spectrum_compute_fft(void) {
-    // Apply windowing
-    apply_hamming_window(vRealL, SAMPLES);
-    apply_hamming_window(vRealR, SAMPLES);
+    // Left channel FFT - ArduinoFFT 2.0.4 API
+    FFT.windowing(vRealL, SAMPLES, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+    FFT.compute(vRealL, vImagL, SAMPLES, FFT_FORWARD);
+    FFT.complexToMagnitude(vRealL, vImagL, SAMPLES);
     
-    // Simple DFT for both channels
-    static float magnitudeL[SAMPLES/2];
-    static float magnitudeR[SAMPLES/2];
+    // Right channel FFT - ArduinoFFT 2.0.4 API
+    FFT.windowing(vRealR, SAMPLES, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+    FFT.compute(vRealR, vImagR, SAMPLES, FFT_FORWARD);
+    FFT.complexToMagnitude(vRealR, vImagR, SAMPLES);
     
-    simple_dft(vRealL, magnitudeL, SAMPLES);
-    simple_dft(vRealR, magnitudeR, SAMPLES);
-    
-    // Convert DFT bins to frequency bands
+    // Convert FFT bins to frequency bands
     int halfSamples = SAMPLES / 2;
     for (int i = 0; i < NUM_BANDS; i++) {
         int startBin = i * halfSamples / NUM_BANDS;
@@ -81,8 +54,8 @@ void spectrum_compute_fft(void) {
         int count = 0;
         
         for (int bin = startBin; bin < endBin && bin < halfSamples; bin++) {
-            sumL += magnitudeL[bin];
-            sumR += magnitudeR[bin];
+            sumL += vRealL[bin];
+            sumR += vRealR[bin];
             count++;
         }
         
