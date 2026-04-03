@@ -288,5 +288,18 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
         }
 
     }
-    // No push here — caller pushes full frame after FPS overlay
+    
+    // Push only VU bars (not full frame) to avoid 90ms rotation
+    static uint16_t vuBuffer[2 * 176];  // Max 2 bars * 176px * 2 bytes = 704 bytes
+    
+    for (int ch = 0; ch < 2; ch++) {
+        int bar_y = y_pos[ch];
+        uint16_t *src = (uint16_t *)sprite.getPointer() + bar_y * SCREEN_WIDTH + VU_X0;
+        
+        // Copy VU bar line to temporary buffer
+        memcpy(vuBuffer + ch * 176, src, VU_BAR_W * 2);
+        
+        // Push only this bar
+        lcd_PushColors_rotated_90(VU_X0, bar_y, VU_BAR_W, VU_SEG_H, vuBuffer + ch * 176);
+    }
 }

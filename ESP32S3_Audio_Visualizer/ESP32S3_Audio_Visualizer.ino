@@ -165,8 +165,16 @@ void audioDisplayTask(void *param)
             // FPS overlay into sprite
             drawFPS();
 
-            // Single full-frame push to display
-            lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
+            // Push strategy: VU mode pushes its own bars, EQ mode pushes full frame
+            if (currentMode == VIS_VU) {
+                // VU mode already pushed its bars in technics_vfd_draw_vu
+                // Only push FPS overlay area
+                uint16_t *buf = (uint16_t *)sprite.getPointer();
+                lcd_PushColors_rotated_90(280, 0, 80, 14, buf);
+            } else {
+                // EQ mode: push full frame
+                lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
+            }
 
             unsigned long frameTime = millis() - frameStart;
 
