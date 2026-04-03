@@ -275,6 +275,10 @@ void setup()
     // Launch FreeRTOS tasks on separate cores
     xTaskCreatePinnedToCore(audioDisplayTask, "AudioDisplay", 16384, NULL, 2, &audioDisplayTaskHandle, 1);
     xTaskCreatePinnedToCore(touchTask, "Touch", 4096, NULL, 1, &touchTaskHandle, 0);
+    
+    // Enable stack overflow detection
+    vTaskSetApplicationTaskTag(audioDisplayTaskHandle, (TaskHookFunction_t)1);
+    vTaskSetApplicationTaskTag(touchTaskHandle, (TaskHookFunction_t)2);
 
     Serial.println("Ready. Touch to cycle: EQ -> VU");
 }

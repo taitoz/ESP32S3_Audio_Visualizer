@@ -205,10 +205,18 @@ void technics_vfd_draw_eq(TFT_eSPI &tft, const float *bands, int numBands) {
 // ─── VU Update (Dirty Rectangles — draw into sprite, push dirty stripes) ───
 void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
     if (!inited) return;
+    
+    // DEBUG: Check stack watermark to detect overflow
+    static unsigned long lastStackCheck = 0;
+    unsigned long now = millis();
+    if (now - lastStackCheck >= 1000) {
+        UBaseType_t stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+        Serial.printf("VU task stack free: %u bytes\\n", stackHighWaterMark);
+        lastStackCheck = now;
+    }
 
     float rms_in[2] = {rmsL, rmsR};
     int   y_pos[2]  = {VU_Y_L, VU_Y_R};
-    unsigned long now = millis();
 
     for (int ch = 0; ch < 2; ch++) {
         float val = rms_in[ch];
