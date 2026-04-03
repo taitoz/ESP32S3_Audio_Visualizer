@@ -30,9 +30,16 @@ static bool inited = false;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-static inline uint16_t vfd_color(int seg, int threshold, bool half) {
-    if (seg >= threshold) return half ? VFD_CYAN_HALF : VFD_CYAN_FULL;
-    return half ? VFD_AMBER_HALF : VFD_AMBER_FULL;
+// EQ color mapping: cyan (low) → red (high)
+static inline uint16_t vfd_color_eq(int seg, int threshold, bool half) {
+    if (seg >= threshold) return half ? VFD_RED_HALF : VFD_RED_FULL;
+    return half ? VFD_CYAN_HALF : VFD_CYAN_FULL;
+}
+
+// VU color mapping: amber (all levels)
+static inline uint16_t vfd_color_vu(int seg, int threshold, bool half) {
+    if (seg >= threshold) return half ? VFD_AMBER_HALF : VFD_AMBER_FULL;
+    return half ? VFD_CYAN_HALF : VFD_CYAN_FULL;
 }
 
 // ─── Draw Programmatic EQ Background into sprite ────────────────────────────
@@ -182,10 +189,10 @@ void technics_vfd_draw_eq(TFT_eSPI &tft, const float *bands, int numBands) {
 
             if (seg < full) {
                 int threshold = (int)(EQ_MAX_SEGS * 0.8f);
-                sprite.fillRect(bx, sy, EQ_SEG_W, EQ_SEG_H, vfd_color(seg, threshold, false));
+                sprite.fillRect(bx, sy, EQ_SEG_W, EQ_SEG_H, vfd_color_eq(seg, threshold, false));
             } else if (seg == full && half) {
                 int threshold = (int)(EQ_MAX_SEGS * 0.8f);
-                sprite.fillRect(bx, sy, EQ_SEG_W, EQ_SEG_H, vfd_color(seg, threshold, true));
+                sprite.fillRect(bx, sy, EQ_SEG_W, EQ_SEG_H, vfd_color_eq(seg, threshold, true));
             } else {
                 sprite.fillRect(bx, sy, EQ_SEG_W, EQ_SEG_H, VFD_BG);
             }
@@ -240,12 +247,12 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
             int sx = VU_X0 + seg * (VU_SEG_W + VU_SEG_GAP);
 
             if (seg < lit) {
-                sprite.fillRect(sx, bar_y, VU_SEG_W, VU_SEG_H, vfd_color(seg, VU_0DB_SEG, false));
+                sprite.fillRect(sx, bar_y, VU_SEG_W, VU_SEG_H, vfd_color_vu(seg, VU_0DB_SEG, false));
             } else if (seg == lit) {
                 float frac = vu_filtered[ch] * VU_MAX_SEGS - lit;
                 if (frac > 0.25f) {
                     bool is_full = frac > 0.75f;
-                    sprite.fillRect(sx, bar_y, VU_SEG_W, VU_SEG_H, vfd_color(seg, VU_0DB_SEG, !is_full));
+                    sprite.fillRect(sx, bar_y, VU_SEG_W, VU_SEG_H, vfd_color_vu(seg, VU_0DB_SEG, !is_full));
                 } else {
                     sprite.fillRect(sx, bar_y, VU_SEG_W, VU_SEG_H, VFD_BG);
                 }
@@ -258,7 +265,7 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
         if ((peak_active || peak_fading) && peak_seg > 0 && peak_seg < VU_MAX_SEGS) {
             int px = VU_X0 + peak_seg * (VU_SEG_W + VU_SEG_GAP);
             bool half = peak_fading;
-            sprite.fillRect(px, bar_y, VU_SEG_W, VU_SEG_H, vfd_color(peak_seg, VU_0DB_SEG, half));
+            sprite.fillRect(px, bar_y, VU_SEG_W, VU_SEG_H, vfd_color_vu(peak_seg, VU_0DB_SEG, half));
         }
 
     }

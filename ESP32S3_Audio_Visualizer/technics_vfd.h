@@ -14,7 +14,9 @@
 // ─── VFD Colors (RGB565) ────────────────────────────────────────────────────
 #define VFD_CYAN_FULL     0x07FF
 #define VFD_CYAN_HALF     0x03EF
-#define VFD_AMBER_FULL    0xFDA0
+#define VFD_RED_FULL      0xF800   // Bright red (5-6-5 RGB)
+#define VFD_RED_HALF      0xB800   // Dim red
+#define VFD_AMBER_FULL    0xFDA0   // Keep for VU mode
 #define VFD_AMBER_HALF    0x7B20
 #define VFD_BG            0x0000
 #define VFD_GRID          0x18E3   // Dark grey for grid lines
