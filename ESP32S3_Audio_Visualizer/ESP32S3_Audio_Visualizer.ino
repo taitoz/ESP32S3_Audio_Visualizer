@@ -35,7 +35,6 @@
 #include "spectrum.h"
 #include "settings.h"
 #include "serial_cmd.h"
-#include "light_sensor.h"
 #include "esp_task_wdt.h"
 
 // ─── Display & Sprite ───────────────────────────────────────────────────────
@@ -237,9 +236,7 @@ void touchTask(void *param)
             touch_held = false;
         }
 
-        // Auto-brightness from ambient light sensor - TEMPORARILY DISABLED
-        // light_sensor_poll();
-
+        
         vTaskDelay(pdMS_TO_TICKS(20));  // ~50 Hz touch + serial polling
     }
 }
@@ -297,9 +294,7 @@ void setup()
     // Serial command handler init
     serial_cmd_init();
 
-    // Light sensor init (auto-brightness) - TEMPORARILY DISABLED TO FIX ADC CONFLICTS
-    // light_sensor_init();
-
+    
     // Show splash
     sprite.fillSprite(TFT_BLACK);
     sprite.setTextColor(TFT_CYAN, TFT_BLACK);

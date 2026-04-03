@@ -88,6 +88,7 @@ void audio_sampling_consume()
 {
     int readBuf = activeBuffer ^ 1;  // the buffer that just finished filling
 
+    
     // Compute actual DC mean per channel (handles floating pins, missing bias, etc.)
     float sumL = 0.0f, sumR = 0.0f;
     for (int i = 0; i < SAMPLES; i++) {
@@ -100,6 +101,10 @@ void audio_sampling_consume()
     for (int i = 0; i < SAMPLES; i++) {
         vRealL[i] = (float)sampleBufferL[readBuf][i] - dcL;
         vImagL[i] = 0.0f;
+        
+        // TEMP TEST: Force zero right channel to check if it's ADC data issue
+        // vRealR[i] = 0.0f;  // Uncomment this line to test
+        
         vRealR[i] = (float)sampleBufferR[readBuf][i] - dcR;
         vImagR[i] = 0.0f;
     }
@@ -114,8 +119,12 @@ float audio_get_rms(int ch)
         sum += v[i] * v[i];
     }
     float rms = sqrtf(sum / SAMPLES);
+    
+    // Normalize to 0.0-1.0 range (ADC_CENTER is ~2048 for 12-bit)
+    rms = rms / ADC_CENTER;
+    
     // Noise gate: treat low-level ADC noise / floating pins as silence
-    if (rms < NOISE_GATE_RMS) rms = 0.0f;
+    if (rms < 0.01f) rms = 0.0f;  // ~1% of full scale
     return rms;
 }
 

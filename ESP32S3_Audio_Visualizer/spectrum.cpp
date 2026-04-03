@@ -3,6 +3,7 @@
 #include <TFT_eSPI.h>
 #include "pins_config.h"
 #include "settings.h"
+#include "audio_sampling.h"
 
 
 
@@ -138,11 +139,9 @@ static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
 
 
 
-        // Scale to half-screen height (each channel gets half)
-
-        // Adjust the divisor to calibrate sensitivity for your input signal
-
-        val = val / 300.0f;
+        // Normalize FFT magnitude and scale to half-screen height
+        // Use ADC_CENTER for proper normalization (was hardcoded 300.0f)
+        val = val / ADC_CENTER;
 
         if (val > halfH) val = halfH;
 
