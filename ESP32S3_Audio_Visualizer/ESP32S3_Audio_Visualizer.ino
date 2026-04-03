@@ -185,8 +185,11 @@ void audioDisplayTask(void *param)
                     lastPrint = now;
                 }
             }
+            
+            // Critical: yield after each frame to reset watchdog
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
-        vTaskDelay(1);  // yield briefly to avoid WDT
+        vTaskDelay(1);  // yield when no audio data available
     }
 }
 
