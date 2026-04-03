@@ -10,10 +10,6 @@
  * The settings struct is volatile since it can be accessed from multiple cores.
  ******************************************************************************/
 
-// Visualization modes
-#define VIS_SPECTRUM     0
-#define VIS_VU_NEEDLE    1
-#define VIS_VU_LED_LADDER 2
 
 typedef struct {
     // Visualization

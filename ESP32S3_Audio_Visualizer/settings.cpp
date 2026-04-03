@@ -11,7 +11,7 @@ static Preferences prefs;
 void settings_init()
 {
     // Defaults
-    settings.viz_mode        = 0;       // VIS_SPECTRUM
+    settings.viz_mode        = 0;       // VIS_EQ
     settings.brightness      = 128;     // 50% default brightness
     settings.adc_sensitivity = 300.0f;  // spectrum divisor
     settings.dac_volume_l    = 0x00;    // 0 dB

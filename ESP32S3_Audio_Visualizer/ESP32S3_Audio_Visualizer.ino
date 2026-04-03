@@ -79,14 +79,6 @@ bool checkTouch()
     while (!Wire.available());
     Wire.readBytes(buff, 8);
 
-    // Debug: print raw touch data every 2 seconds
-    static unsigned long lastDebug = 0;
-    if (millis() - lastDebug > 2000) {
-        Serial.printf("Touch raw: %02X %02X %02X %02X %02X %02X %02X %02X\n", 
-                     buff[0], buff[1], buff[2], buff[3], buff[4], buff[5], buff[6], buff[7]);
-        lastDebug = millis();
-    }
-
     // Must have at least 1 touch point — otherwise it's not a real touch
     uint8_t pointNum = AXS_GET_POINT_NUM(buff);
     if (pointNum == 0) return false;
@@ -99,10 +91,6 @@ bool checkTouch()
 
     int tx = map(pointX, 627, 10, 0, 640);
     int ty = map(pointY, 180, 0, 0, 180);
-
-    // Debug: print touch coordinates when touched
-    Serial.printf("Touch: points=%d, X=%d, Y=%d, tx=%d, ty=%d\n", 
-                 pointNum, pointX, pointY, tx, ty);
 
     // Valid touch anywhere on screen → mode switch
     if (tx >= 0 && tx <= SCREEN_WIDTH && ty >= 0 && ty <= SCREEN_HEIGHT) {
@@ -224,28 +212,32 @@ void audioDisplayTask(void *param)
 // ─── Core 0 Task: Touch Polling ─────────────────────────────────────────────
 void touchTask(void *param)
 {
-    Serial.println("Touch task started on Core 0");
+    Serial.println("Touch task started");
     for (;;) {
-        // Simple debug - just check touch pin
-        int touchState = digitalRead(TOUCH_INT);
-        static unsigned long lastDebug = 0;
-        
-        // Debug: report pin state every 2 seconds
-        if (millis() - lastDebug > 2000) {
-            Serial.printf("Touch pin state: %d\n", touchState);
-            lastDebug = millis();
-        }
-        
-        // Simple touch detection
-        if (touchState == LOW && !touch_held) {
-            Serial.println("Touch detected!");
-            cycleMode();
+        // Process serial commands from Web Serial UI
+        serial_cmd_poll();
+
+        // Touch handling - simple polling without I2C conflicts
+        if (digitalRead(TOUCH_INT) == LOW) {
+            if (!touch_held && (millis() - touch_released_at >= TOUCH_DEBOUNCE_MS)) {
+                // Try I2C touch read with timeout
+                if (checkTouch()) {
+                    cycleMode();
+                    Serial.printf("Touch: Mode %d\n", (int)currentMode);
+                }
+            }
             touch_held = true;
-        } else if (touchState == HIGH) {
+        } else {
+            if (touch_held) {
+                touch_released_at = millis();
+            }
             touch_held = false;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(50));  // 20 Hz polling
+        // Auto-brightness from ambient light sensor
+        light_sensor_poll();
+
+        vTaskDelay(pdMS_TO_TICKS(20));  // ~50 Hz touch + serial polling
     }
 }
 
