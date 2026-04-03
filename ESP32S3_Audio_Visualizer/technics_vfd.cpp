@@ -83,7 +83,7 @@ void technics_vfd_draw_bg_vu(TFT_eSPI &tft) {
     sprite.setTextColor(VFD_GRID, VFD_BG);
     sprite.setTextDatum(TC_DATUM);
     const char *db_labels[] = {"-20", "-10", "-5", "0", "+3", "+6"};
-    const int db_segs[] = {0, 22, 33, VU_0DB_SEG, 49, VU_MAX_SEGS - 1};
+    const int db_segs[] = {0, 11, 16, VU_0DB_SEG, 24, VU_MAX_SEGS - 1};
     for (int i = 0; i < 6; i++) {
         int x = VU_X0 + db_segs[i] * (VU_SEG_W + VU_SEG_GAP);
         sprite.drawFastVLine(x, VU_Y_L - 8, 5, VFD_GRID);

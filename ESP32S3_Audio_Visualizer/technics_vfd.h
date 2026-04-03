@@ -36,12 +36,12 @@
 #define VU_SEG_W          5        // Segment width
 #define VU_SEG_H          12       // Segment height
 #define VU_SEG_GAP        2        // Gap between segments
-#define VU_MAX_SEGS       55       // Max segments per bar
+#define VU_MAX_SEGS       27       // Max segments per bar (reduced from 55)
 #define VU_BAR_W          ((VU_SEG_W + VU_SEG_GAP) * VU_MAX_SEGS)
 #define VU_X0             80       // Left edge of bars
 #define VU_Y_L            65       // Left channel Y
 #define VU_Y_R            105      // Right channel Y
-#define VU_0DB_SEG        44       // 0dB mark at segment 44 (~80%)
+#define VU_0DB_SEG        22       // 0dB mark at segment 22 (~80% of 27)
 
 // ─── Peak Hold ──────────────────────────────────────────────────────────────
 #define PEAK_HOLD_MS      500
