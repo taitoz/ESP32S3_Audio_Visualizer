@@ -103,18 +103,15 @@ void cycleMode()
     settings.viz_mode = (uint8_t)currentMode;
 }
 
-// ─── Draw FPS overlay (top center, into sprite → push stripe) ───────────────
+// ─── Draw FPS overlay into sprite (no push — caller pushes full frame) ──────
 static void drawFPS()
 {
-    sprite.fillRect(280, 0, 80, 14, VFD_BG);  // Clear previous text area
+    sprite.fillRect(280, 0, 80, 14, VFD_BG);
     sprite.setTextColor(VFD_GRID, VFD_BG);
     sprite.setTextDatum(TC_DATUM);
     char fpsBuf[16];
     snprintf(fpsBuf, sizeof(fpsBuf), "%.0f FPS", fps);
     sprite.drawString(fpsBuf, 320, 2, 1);
-    // Push only the top FPS stripe
-    uint16_t *buf = (uint16_t *)sprite.getPointer();
-    lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, 14, buf);
 }
 
 // ─── Track last mode for background redraw on switch ────────────────────────
@@ -145,6 +142,8 @@ void audioDisplayTask(void *param)
             float rmsL  = audio_get_rms(CH_LEFT);
             float rmsR  = audio_get_rms(CH_RIGHT);
 
+            unsigned long frameStart = millis();
+
             // Run FFT only for EQ mode
             if (currentMode == VIS_EQ) {
                 spectrum_compute_fft();
@@ -153,8 +152,11 @@ void audioDisplayTask(void *param)
                 technics_vfd_draw_vu(tft, rmsL, rmsR);
             }
 
-            // FPS overlay
+            // FPS overlay into sprite
             drawFPS();
+
+            // Single full-frame push to display
+            lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
 
             unsigned long frameTime = millis() - frameStart;
 

@@ -35,12 +35,12 @@ static inline uint16_t vfd_color(int seg, int threshold, bool half) {
     return half ? VFD_AMBER_HALF : VFD_AMBER_FULL;
 }
 
-// Push a dirty horizontal stripe from the sprite to the display
-static void push_stripe(int y, int h) {
-    if (y < 0) y = 0;
-    if (y + h > SCREEN_HEIGHT) h = SCREEN_HEIGHT - y;
-    uint16_t *buf = (uint16_t *)sprite.getPointer();
-    lcd_PushColors_rotated_90(0, y, SCREEN_WIDTH, h, buf + y * SCREEN_WIDTH);
+// Push entire framebuffer to display
+// NOTE: lcd_PushColors_rotated_90 does software rotation into qBuffer.
+// Partial stripes crash because the rotation reads outside bounds.
+// Full-frame push is the only safe approach on this hardware.
+static void push_frame() {
+    lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t *)sprite.getPointer());
 }
 
 // ─── Draw Programmatic EQ Background into sprite ────────────────────────────
@@ -189,11 +189,7 @@ void technics_vfd_draw_eq(TFT_eSPI &tft, const float *bands, int numBands) {
         }
     }
 
-    // Push only the EQ area stripe
-    if (any_dirty) {
-        int y_top = EQ_Y_BOTTOM - EQ_SPRITE_H;
-        push_stripe(y_top, EQ_SPRITE_H);
-    }
+    // No push here — caller pushes full frame after FPS overlay
 }
 
 // ─── VU Update (Dirty Rectangles — draw into sprite, push dirty stripes) ───
@@ -262,7 +258,6 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
             sprite.fillRect(px, bar_y, VU_SEG_W, VU_SEG_H, vfd_color(peak_seg, VU_0DB_SEG, half));
         }
 
-        // Push only this bar's stripe
-        push_stripe(bar_y, VU_SEG_H);
     }
+    // No push here — caller pushes full frame after FPS overlay
 }
