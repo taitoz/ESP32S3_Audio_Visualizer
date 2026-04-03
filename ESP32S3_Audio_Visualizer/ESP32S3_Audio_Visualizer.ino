@@ -142,6 +142,14 @@ void audioDisplayTask(void *param)
         if (serialMode < VIS_MODE_COUNT && serialMode != currentMode) {
             currentMode = serialMode;
         }
+        
+        // Emergency auto-switch every 10 seconds
+        static unsigned long lastAutoSwitch = 0;
+        if (millis() - lastAutoSwitch > 10000) {
+            lastAutoSwitch = millis();
+            pendingModeSwitch = true;
+            Serial.println("Auto-switching mode...");
+        }
 
         // Redraw background when mode changes
         if (currentMode != lastDrawnMode) {
@@ -205,6 +213,8 @@ void audioDisplayTask(void *param)
         unsigned long elapsed = millis() - loopStart;
         if (elapsed < 33) {
             vTaskDelay(pdMS_TO_TICKS(33 - elapsed));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(1));  // Always give Core 0 some time
         }
     }
 }
@@ -213,6 +223,11 @@ void audioDisplayTask(void *param)
 void touchTask(void *param)
 {
     Serial.println("Touch task started");
+    
+    // Capture I2C bus for touch controller
+    Wire.begin(TOUCH_IICSDA, TOUCH_IICSCL);
+    Wire.setClock(400000);
+    
     for (;;) {
         // Process serial commands from Web Serial UI
         serial_cmd_poll();
