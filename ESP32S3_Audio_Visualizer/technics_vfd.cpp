@@ -215,6 +215,11 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
         Serial.printf("VU - Stack: %u, Heap: %u\\n", stackHighWaterMark, freeHeap);
         lastCheck = now;
     }
+    
+    // Rate limit VU updates to prevent watchdog timeout
+    static unsigned long lastVUUpdate = 0;
+    if (now - lastVUUpdate < 66) return;  // ~15 FPS max (66ms frame time)
+    lastVUUpdate = now;
 
     float rms_in[2] = {rmsL, rmsR};
     int   y_pos[2]  = {VU_Y_L, VU_Y_R};
@@ -288,18 +293,5 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
         }
 
     }
-    
-    // Push only VU bars (not full frame) to avoid 90ms rotation
-    static uint16_t vuBuffer[2 * 176];  // Max 2 bars * 176px * 2 bytes = 704 bytes
-    
-    for (int ch = 0; ch < 2; ch++) {
-        int bar_y = y_pos[ch];
-        uint16_t *src = (uint16_t *)sprite.getPointer() + bar_y * SCREEN_WIDTH + VU_X0;
-        
-        // Copy VU bar line to temporary buffer
-        memcpy(vuBuffer + ch * 176, src, VU_BAR_W * 2);
-        
-        // Push only this bar
-        lcd_PushColors_rotated_90(VU_X0, bar_y, VU_BAR_W, VU_SEG_H, vuBuffer + ch * 176);
-    }
+    // No push here — caller pushes full frame after FPS overlay
 }
