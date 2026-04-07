@@ -87,11 +87,6 @@ static void process_command(const char *line)
             settings.viz_mode = doc["viz_mode"].as<uint8_t>();
             settings_save_field("viz_mode");
         }
-        if (doc["brightness"].is<int>()) {
-            settings.brightness = doc["brightness"].as<uint8_t>();
-            analogWrite(TFT_BL, settings.brightness);
-            settings_save_field("brightness");
-        }
         if (doc["brightness_min"].is<int>()) {
             settings.brightness_min = doc["brightness_min"].as<uint8_t>();
             if (settings.brightness_min < 1) settings.brightness_min = 1;

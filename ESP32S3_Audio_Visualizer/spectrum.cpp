@@ -70,11 +70,6 @@ void spectrum_init()
 
 // Process one channel's FFT bins into band values
 
-// Missing constants - add them
-#define BAND_SMOOTHING    0.7f
-#define PEAK_HOLD_FRAMES  30
-#define PEAK_FALL_RATE    0.5f
-
 static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
 
                           float *peakValues, int *peakHoldCount, int halfH)
@@ -140,8 +135,8 @@ static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
 
 
         // Normalize FFT magnitude and scale to half-screen height
-        // Use ADC_CENTER for proper normalization (was hardcoded 300.0f)
-        val = val / ADC_CENTER;
+        // Use settings.adc_sensitivity for user-adjustable scaling
+        val = val / settings.adc_sensitivity;
 
         if (val > halfH) val = halfH;
 
@@ -149,7 +144,7 @@ static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
 
         // Exponential smoothing
 
-        bandSmoothed[i] = bandSmoothed[i] * BAND_SMOOTHING + val * (1.0f - BAND_SMOOTHING);
+        bandSmoothed[i] = bandSmoothed[i] * settings.band_smoothing + val * (1.0f - settings.band_smoothing);
 
         bandValues[i] = bandSmoothed[i];
 
@@ -161,7 +156,7 @@ static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
 
             peakValues[i] = bandValues[i];
 
-            peakHoldCount[i] = PEAK_HOLD_FRAMES;
+            peakHoldCount[i] = settings.peak_hold_frames;
 
         } else {
 
@@ -171,7 +166,7 @@ static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
 
             } else {
 
-                peakValues[i] -= PEAK_FALL_RATE;
+                peakValues[i] -= settings.peak_fall_rate;
 
                 if (peakValues[i] < 0) peakValues[i] = 0;
 
