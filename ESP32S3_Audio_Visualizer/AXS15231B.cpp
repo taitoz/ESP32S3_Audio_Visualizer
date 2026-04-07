@@ -788,6 +788,73 @@ void lcd_PushColors_rotated_90(
 
 }
 
+// New version with stride parameter for partial screen updates
+// stride = width of source buffer (e.g., 640 for main sprite)
+// width/high = size of rectangle to push
+void lcd_PushColors_rotated_90_stride(
+                    uint16_t x,
+                    uint16_t y,
+                    uint16_t width,
+                    uint16_t high,
+                    uint16_t *data,
+                    uint16_t stride)
+{
+    uint16_t  _x = 180 - (y + high);
+    uint16_t  _y = x;
+    uint16_t  _h = width;
+    uint16_t  _w = high;
+
+    lcd_address_set(_x, _y, _x + _w - 1, _y + _h - 1);
+
+    bool first_send = 1;
+    size_t len = width * high;
+    uint16_t *p = (uint16_t *)data;
+    uint16_t *q = (uint16_t *)qBuffer;
+    uint32_t index = 0;
+
+    // Use stride instead of width for row calculation
+    for (uint16_t j = 0; j < width; j++)
+    {
+        for (uint16_t i = 0; i < high; i++)
+        {
+            qBuffer[index++] = ((uint16_t)p[stride * (high - i - 1) + j]);
+        }
+    }
+
+    TFT_CS_L;
+    do
+    {
+        size_t chunk_size = len;  
+        spi_transaction_ext_t t = {0};
+        memset(&t, 0, sizeof(t));
+        if (first_send)
+        {
+            t.base.flags = SPI_TRANS_MODE_QIO;
+            t.base.cmd = 0x32;
+            t.base.addr = 0x002C00;
+            first_send = 0;
+        }
+        else
+        {
+            t.base.flags = SPI_TRANS_MODE_QIO | SPI_TRANS_VARIABLE_CMD |
+                           SPI_TRANS_VARIABLE_ADDR | SPI_TRANS_VARIABLE_DUMMY;
+            t.command_bits = 0;
+            t.address_bits = 0;
+            t.dummy_bits = 0;
+        }
+        if (chunk_size > SEND_BUF_SIZE)
+        {
+            chunk_size = SEND_BUF_SIZE;
+        }
+        t.base.tx_buffer = q; 
+        t.base.length = chunk_size * 16;
+        spi_device_polling_transmit(spi, (spi_transaction_t *)&t);
+        len -= chunk_size;
+        q += chunk_size;
+    } while (len > 0);
+    TFT_CS_H;   
+}
+
 
 
 

@@ -22,13 +22,13 @@ Combines real-time audio visualization, AKM AK4493 DAC control, and Samsung Gear
 
 ## Features (Phase 1 — Current)
 
-- **Spectrum Analyzer** — 32-band FFT from GPIO ADC input via audio transformer, logarithmic frequency mapping, green-yellow-red gradient bars
-- **Peak Hold** — white peak dots per band with configurable hold time and fall rate
-- **VU Meter — Needle** — classic dual analog needle with dB scale, red zone, ballistic smoothing
-- **VU Meter — LED Ladder** — 40-segment horizontal bar for RMS and Peak with dB readout
-- **VU Meter — Retro Analog** — warm palette dual meter with shadow needle, green/red arc zones, skeuomorphic face
-- **Touch Mode Switching** — tap anywhere on screen to cycle: Spectrum → Needle → LED → Retro
-- **FPS Counter** — displayed on each frame
+- **Technics EQ (SH-GE70 style)** — 10-band FFT spectrum analyzer with authentic VFD cyan-to-red gradient, logarithmic frequency mapping, peak hold dots
+- **Technics VU (RS-TR373 style)** — Dual horizontal VU meters with 16 amber segments per channel, dB scale (-20 to +6), peak hold with fade
+- **Touch Mode Switching** — tap screen to cycle: EQ → VU
+- **Auto-Brightness** — ambient light sensor adjusts backlight (10-255) once per second to prevent flickering
+- **Dual-Core FreeRTOS** — Core 0: touch + serial + light sensor, Core 1: audio + FFT + display
+- **Web Serial UI** — real-time settings control via browser (band smoothing, peak hold, VU attack/release)
+- **Performance** — ~10 FPS for both modes, full-frame 640×180 QSPI push with software 90° rotation
 
 ---
 
@@ -92,6 +92,7 @@ GPIO42 (CS)   ───→ CSN  (chip select, active low)
 | 10 | Touch SCL | I2C (Wire) | |
 | 11 | Touch INT | — | Active LOW on touch |
 | 0 | Button 1 (BOOT) | — | |
+| 4 | Light sensor | ADC1_CH3 | Ambient light for auto-brightness |
 | 8 | Battery voltage ADC | ADC | |
 | 39 | AK4493 SCK | SPI3 (HSPI) | Phase 2 |
 | 40 | AK4493 MOSI | SPI3 (HSPI) | Phase 2 |
@@ -133,12 +134,15 @@ ESP32S3_Audio_Visualizer/
 ├── README.md                              ← this file
 ├── PROJECT_CONTEXT.md                     ← architecture, decisions, phase roadmap
 └── ESP32S3_Audio_Visualizer/
-    ├── ESP32S3_Audio_Visualizer.ino       ← main sketch: setup, loop, touch, frame dispatch
+    ├── ESP32S3_Audio_Visualizer.ino       ← main: FreeRTOS tasks, touch, mode switching
     ├── pins_config.h                      ← all pin definitions and hardware constants
-    ├── AXS15231B.cpp / .h                 ← QSPI display driver (from nikthefix reference)
+    ├── AXS15231B.cpp / .h                 ← QSPI display driver with 90° rotation
     ├── audio_sampling.cpp / .h            ← timer-driven ADC double-buffer (1024 @ 22050Hz)
-    ├── spectrum.cpp / .h                  ← FFT processing, 32-band log-scale, bar drawing
-    └── vu_meter.cpp / .h                  ← 3 VU styles: Needle, LED Ladder, Retro Analog
+    ├── spectrum.cpp / .h                  ← FFT processing, 10-band log-scale
+    ├── technics_vfd.cpp / .h              ← Technics EQ + VU rendering (SH-GE70, RS-TR373)
+    ├── settings.cpp / .h                  ← NVS persistence, Web Serial JSON API
+    ├── serial_cmd.cpp / .h                ← Serial command parser for settings
+    └── light_sensor.cpp / .h              ← Ambient light sensor for auto-brightness
 ```
 
 ---
@@ -150,7 +154,30 @@ ESP32S3_Audio_Visualizer/
 3. Select board & build settings as shown above
 4. Wire audio transformer output to GPIO3 with bias circuit
 5. Flash and run
-6. Touch the screen to cycle visualization modes
+6. Touch the screen to cycle visualization modes (EQ ↔ VU)
+7. Open `settings.html` in Chrome/Edge to configure via Web Serial
+
+## Web Serial UI
+
+The `settings.html` file provides a browser-based configuration interface:
+
+**Features:**
+- Real-time parameter adjustment (ADC sensitivity, band smoothing, peak hold, VU attack/release)
+- Live FPS and heap monitoring
+- No app installation required — works directly in Chrome/Edge
+- USB Serial connection @ 115200 baud
+
+**Usage:**
+1. Open `settings.html` in Chrome or Edge browser
+2. Click "Connect COM Port" and select ESP32-S3 device
+3. Adjust parameters in real-time
+4. Changes are saved to NVS automatically
+
+**Available Settings:**
+- **Visualization**: Mode selection, ADC sensitivity (50-2000)
+- **Spectrum**: Band smoothing (0-0.99), peak fall rate (0.1-3.0), peak hold frames (0-60)
+- **VU Meter**: Attack speed (0.01-1.0), release speed (0.01-1.0)
+- **Display**: Manual brightness (0-255), FPS display
 
 ---
 

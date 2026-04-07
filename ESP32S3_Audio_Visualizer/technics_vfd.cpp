@@ -269,5 +269,6 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
             sprite.fillRect(px, bar_y, VU_SEG_W, VU_SEG_H, vfd_color_vu(peak_seg, VU_0DB_SEG, half));
         }
     }
-    // No push here - caller pushes full frame after FPS overlay
+    // No push here - VU bars are 592px wide (almost full screen)
+    // Partial update doesn't make sense, caller will do full frame push
 }

@@ -11,12 +11,13 @@
 **Goal**: Real-time audio spectrum analyzer and VU meter with capacitive touch control on ESP32-S3 platform.
 
 **Implemented Features**:
-1. ✅ Real-time audio spectrum analyzer (8-band EQ visualization)
-2. ✅ Stereo VU meters with peak hold
-3. ✅ Capacitive touch control for mode switching
-4. ✅ Web Serial UI for configuration
-5. ✅ FreeRTOS dual-core architecture
-6. ✅ PSRAM-optimized display rendering
+1. ✅ Technics EQ (SH-GE70 style) — 10-band FFT spectrum with cyan-to-red gradient
+2. ✅ Technics VU (RS-TR373 style) — Dual 16-segment amber VU meters with dB scale
+3. ✅ Capacitive touch control for mode switching (EQ ↔ VU)
+4. ✅ Auto-brightness via ambient light sensor (GPIO4)
+5. ✅ Web Serial UI for real-time settings control
+6. ✅ FreeRTOS dual-core architecture (Core 0: touch/serial, Core 1: audio/display)
+7. ✅ PSRAM-optimized display rendering with full-frame 640×180 push
 
 **Core Principle**: The 640x180 landscape display and capacitive touchscreen provide the primary user interface. Audio visualization responds in real-time to stereo input.
 
@@ -37,6 +38,7 @@
 | BLE | BLE 5.0 via ESP32-S3 radio |
 | Buttons | GPIO0 (BOOT), GPIO21 (shared with display D2) |
 | Battery | ADC on GPIO8 |
+| Light Sensor | ADC on GPIO4 (ambient light for auto-brightness) |
 
 ### 2.2 Display Architecture
 

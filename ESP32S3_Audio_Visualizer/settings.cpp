@@ -13,6 +13,9 @@ void settings_init()
     // Defaults
     settings.viz_mode        = 0;       // VIS_EQ
     settings.brightness      = 128;     // 50% default brightness
+    settings.brightness_min  = 10;      // min auto-brightness
+    settings.brightness_max  = 255;     // max auto-brightness
+    settings.light_gain      = 1.0f;    // light sensor gain
     settings.adc_sensitivity = 300.0f;  // spectrum divisor
     settings.dac_volume_l    = 0x00;    // 0 dB
     settings.dac_volume_r    = 0x00;    // 0 dB
@@ -32,6 +35,9 @@ void settings_init()
     settings.viz_mode        = prefs.getUChar("viz_mode",    settings.viz_mode);
     if (settings.viz_mode >= 2) settings.viz_mode = 0;  // Clamp to valid modes (VIS_EQ=0, VIS_VU=1)
     settings.brightness      = prefs.getUChar("brightness",  settings.brightness);
+    settings.brightness_min  = prefs.getUChar("bri_min",     settings.brightness_min);
+    settings.brightness_max  = prefs.getUChar("bri_max",     settings.brightness_max);
+    settings.light_gain      = prefs.getFloat("light_gain",  settings.light_gain);
     settings.adc_sensitivity = prefs.getFloat("adc_sens",    settings.adc_sensitivity);
     settings.dac_volume_l    = prefs.getUChar("dac_vol_l",   settings.dac_volume_l);
     settings.dac_volume_r    = prefs.getUChar("dac_vol_r",   settings.dac_volume_r);
@@ -53,6 +59,9 @@ void settings_save()
     prefs.begin("config", false);  // read-write
     prefs.putUChar("viz_mode",    settings.viz_mode);
     prefs.putUChar("brightness",  settings.brightness);
+    prefs.putUChar("bri_min",     settings.brightness_min);
+    prefs.putUChar("bri_max",     settings.brightness_max);
+    prefs.putFloat("light_gain",  settings.light_gain);
     prefs.putFloat("adc_sens",    settings.adc_sensitivity);
     prefs.putUChar("dac_vol_l",   settings.dac_volume_l);
     prefs.putUChar("dac_vol_r",   settings.dac_volume_r);
@@ -74,6 +83,9 @@ void settings_save_field(const char* field)
     prefs.begin("config", false);
     if (strcmp(field, "viz_mode") == 0)        prefs.putUChar("viz_mode",   settings.viz_mode);
     else if (strcmp(field, "brightness") == 0)  prefs.putUChar("brightness", settings.brightness);
+    else if (strcmp(field, "bri_min") == 0)     prefs.putUChar("bri_min",    settings.brightness_min);
+    else if (strcmp(field, "bri_max") == 0)     prefs.putUChar("bri_max",    settings.brightness_max);
+    else if (strcmp(field, "light_gain") == 0)  prefs.putFloat("light_gain", settings.light_gain);
     else if (strcmp(field, "adc_sens") == 0)    prefs.putFloat("adc_sens",   settings.adc_sensitivity);
     else if (strcmp(field, "dac_vol_l") == 0)   prefs.putUChar("dac_vol_l",  settings.dac_volume_l);
     else if (strcmp(field, "dac_vol_r") == 0)   prefs.putUChar("dac_vol_r",  settings.dac_volume_r);

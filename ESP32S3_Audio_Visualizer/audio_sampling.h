@@ -36,12 +36,10 @@ extern float         vImagR[SAMPLES];
 extern int16_t       sampleBufferL[2][SAMPLES];
 extern int16_t       sampleBufferR[2][SAMPLES];
 
-// Global ADC handle — can be shared with other modules (e.g., light sensor)
-extern adc_oneshot_unit_handle_t adc_handle;
-
 void audio_sampling_init();
 void audio_sampling_stop();
 bool audio_sampling_is_ready();
 void audio_sampling_consume();   // copies both channels into vReal/vImag arrays, marks consumed
 float audio_get_rms(int ch);     // compute RMS for channel (CH_LEFT or CH_RIGHT)
 float audio_get_peak(int ch);    // compute peak for channel (CH_LEFT or CH_RIGHT)
+int audio_read_light_sensor();   // read light sensor using shared ADC1 handle

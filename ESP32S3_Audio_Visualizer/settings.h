@@ -17,6 +17,9 @@ typedef struct {
     
     // Display
     uint8_t brightness;
+    uint8_t brightness_min;
+    uint8_t brightness_max;
+    float light_gain;
     
     // Audio ADC
     float adc_sensitivity;

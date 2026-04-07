@@ -50,7 +50,10 @@ void lcd_fill(uint16_t xsta, uint16_t ysta, uint16_t xend, uint16_t yend, uint16
 
 void lcd_PushColors(uint16_t x, uint16_t y, uint16_t width, uint16_t high, uint16_t *data);
 
-void lcd_PushColors_rotated_90(uint16_t x, uint16_t y, uint16_t width, uint16_t high, uint16_t *data);   
+void lcd_PushColors_rotated_90(uint16_t x, uint16_t y, uint16_t width, uint16_t high, uint16_t *data);
+
+// New: with stride parameter for partial updates from larger buffer
+void lcd_PushColors_rotated_90_stride(uint16_t x, uint16_t y, uint16_t width, uint16_t high, uint16_t *data, uint16_t stride);
 
 void lcd_PushColors(uint16_t *data, uint32_t len);// use directly after lcd_address_set()
 

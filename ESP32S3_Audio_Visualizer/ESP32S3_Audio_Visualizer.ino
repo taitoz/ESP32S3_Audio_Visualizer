@@ -173,7 +173,7 @@ void audioDisplayTask(void *param)
 
             // FPS overlay removed from screen (still in serial log)
 
-            // Push full frame for both EQ and VU modes
+            // Push full frame for both modes (VU bars are 592px wide - almost full screen)
             lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
             vTaskDelay(pdMS_TO_TICKS(5));  // Give Core 0 I2C access window
 
@@ -218,6 +218,27 @@ void touchTask(void *param)
     for (;;) {
         // Process serial commands from Web Serial UI
         serial_cmd_poll();
+
+        // Auto-brightness from light sensor (once per second)
+        static uint32_t lastLightCheck = 0;
+        if (millis() - lastLightCheck > 1000) {
+            int raw = audio_read_light_sensor();  // Use shared ADC1 handle (0-4095)
+            
+            // Apply gain and map to brightness range
+            float scaled = raw * settings.light_gain;
+            if (scaled > 4095.0f) scaled = 4095.0f;
+            
+            // Map to min/max brightness range
+            int targetBri = map((int)scaled, 0, 4095, settings.brightness_min, settings.brightness_max);
+            
+            // Clamp to valid range
+            if (targetBri < settings.brightness_min) targetBri = settings.brightness_min;
+            if (targetBri > settings.brightness_max) targetBri = settings.brightness_max;
+            
+            // Set display backlight
+            analogWrite(TFT_BL, targetBri);
+            lastLightCheck = millis();
+        }
 
         // Touch handling - simple polling without I2C conflicts
         if (digitalRead(TOUCH_INT) == LOW) {

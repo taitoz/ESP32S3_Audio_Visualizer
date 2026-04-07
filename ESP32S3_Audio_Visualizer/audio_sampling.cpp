@@ -18,7 +18,7 @@ float         vImagR[SAMPLES];
 
 static volatile uint16_t sampleIndex = 0;
 static esp_timer_handle_t samplingTimer = NULL;
-adc_oneshot_unit_handle_t adc_handle = NULL;
+static adc_oneshot_unit_handle_t audio_adc_handle = NULL;
 
 // Timer callback — reads both L and R ADC channels per tick
 static void IRAM_ATTR sampling_timer_cb(void* arg)
@@ -26,8 +26,8 @@ static void IRAM_ATTR sampling_timer_cb(void* arg)
     if (bufferReady) return;  // previous buffer not consumed yet, skip
 
     int rawL = 0, rawR = 0;
-    adc_oneshot_read(adc_handle, AUDIO_ADC_CHANNEL_L, &rawL);
-    adc_oneshot_read(adc_handle, AUDIO_ADC_CHANNEL_R, &rawR);
+    adc_oneshot_read(audio_adc_handle, AUDIO_ADC_CHANNEL_L, &rawL);
+    adc_oneshot_read(audio_adc_handle, AUDIO_ADC_CHANNEL_R, &rawR);
 
     sampleBufferL[activeBuffer][sampleIndex] = (int16_t)rawL;
     sampleBufferR[activeBuffer][sampleIndex] = (int16_t)rawR;
@@ -46,14 +46,16 @@ void audio_sampling_init()
     adc_oneshot_unit_init_cfg_t init_cfg = {
         .unit_id = ADC_UNIT_1,
     };
-    adc_oneshot_new_unit(&init_cfg, &adc_handle);
+    adc_oneshot_new_unit(&init_cfg, &audio_adc_handle);
 
     adc_oneshot_chan_cfg_t chan_cfg = {
         .atten = ADC_ATTEN_DB_11,    // 0–3.3V range
         .bitwidth = ADC_BITWIDTH_12,
     };
-    adc_oneshot_config_channel(adc_handle, AUDIO_ADC_CHANNEL_L, &chan_cfg);
-    adc_oneshot_config_channel(adc_handle, AUDIO_ADC_CHANNEL_R, &chan_cfg);
+    adc_oneshot_config_channel(audio_adc_handle, AUDIO_ADC_CHANNEL_L, &chan_cfg);
+    adc_oneshot_config_channel(audio_adc_handle, AUDIO_ADC_CHANNEL_R, &chan_cfg);
+    // Also configure light sensor channel (GPIO5 = ADC1_CH4)
+    adc_oneshot_config_channel(audio_adc_handle, ADC_CHANNEL_4, &chan_cfg);
 
     // Start periodic timer for sampling
     const esp_timer_create_args_t timer_args = {
@@ -73,9 +75,9 @@ void audio_sampling_stop()
         esp_timer_delete(samplingTimer);
         samplingTimer = NULL;
     }
-    if (adc_handle) {
-        adc_oneshot_del_unit(adc_handle);
-        adc_handle = NULL;
+    if (audio_adc_handle) {
+        adc_oneshot_del_unit(audio_adc_handle);
+        audio_adc_handle = NULL;
     }
 }
 
@@ -139,4 +141,14 @@ float audio_get_peak(int ch)
     // Noise gate: consistent with RMS threshold
     if (peak < NOISE_GATE_RMS) peak = 0.0f;
     return peak;
+}
+
+int audio_read_light_sensor()
+{
+    // Read light sensor using shared ADC1 handle (GPIO5 = ADC1_CH4)
+    if (!audio_adc_handle) return 0;
+    
+    int raw = 0;
+    adc_oneshot_read(audio_adc_handle, ADC_CHANNEL_4, &raw);
+    return raw;  // 0-4095
 }

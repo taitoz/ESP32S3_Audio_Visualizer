@@ -30,6 +30,9 @@ static void send_status()
     doc["status"]          = true;
     doc["viz_mode"]        = settings.viz_mode;
     doc["brightness"]      = settings.brightness;
+    doc["brightness_min"]  = settings.brightness_min;
+    doc["brightness_max"]  = settings.brightness_max;
+    doc["light_gain"]      = settings.light_gain;
     doc["adc_sensitivity"] = settings.adc_sensitivity;
     doc["dac_volume_l"]    = settings.dac_volume_l;
     doc["dac_volume_r"]    = settings.dac_volume_r;
@@ -88,6 +91,20 @@ static void process_command(const char *line)
             settings.brightness = doc["brightness"].as<uint8_t>();
             analogWrite(TFT_BL, settings.brightness);
             settings_save_field("brightness");
+        }
+        if (doc["brightness_min"].is<int>()) {
+            settings.brightness_min = doc["brightness_min"].as<uint8_t>();
+            if (settings.brightness_min < 1) settings.brightness_min = 1;
+            settings_save_field("bri_min");
+        }
+        if (doc["brightness_max"].is<int>()) {
+            settings.brightness_max = doc["brightness_max"].as<uint8_t>();
+            if (settings.brightness_max < settings.brightness_min) settings.brightness_max = settings.brightness_min;
+            settings_save_field("bri_max");
+        }
+        if (doc["light_gain"].is<float>()) {
+            settings.light_gain = doc["light_gain"].as<float>();
+            settings_save_field("light_gain");
         }
         if (doc["adc_sensitivity"].is<float>()) {
             settings.adc_sensitivity = doc["adc_sensitivity"].as<float>();
