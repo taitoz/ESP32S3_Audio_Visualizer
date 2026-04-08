@@ -22,9 +22,13 @@ typedef struct {
     uint8_t brightness_max;
     float light_gain;
     
-    // Audio ADC
-    float adc_sensitivity;
-    float noise_threshold;  // Minimum signal level to display (filters ADC noise)
+    // Audio ADC - Spectrum Analyzer
+    float spectrum_sensitivity;  // Spectrum FFT divisor
+    float spectrum_threshold;    // Spectrum noise gate
+    
+    // Audio ADC - VU Meter
+    float vu_sensitivity;        // VU meter divisor
+    float vu_threshold;          // VU meter noise gate
     
     // DAC (AK4493)
     uint8_t dac_volume_l;

@@ -84,11 +84,17 @@ static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
 
 
 
-    for (int i = 1; i < maxBin; i++) {
+
+    // Process FFT bins and map to logarithmic bands
+    for (int i = 0; i < maxBin; i++) {
+
+        // CRITICAL: Skip first 5 bins (DC offset + low-frequency noise)
+        // Bin 0 = DC, bins 1-4 = <108Hz (sub-bass noise that causes false peaks)
+        if (i < 5) continue;
 
         float freq = (float)i * SAMPLING_FREQ / SAMPLES;
 
-        float minFreq = 30.0f;
+        float minFreq = 100.0f;  // Minimum frequency for spectrum
 
         float maxFreq = (float)(SAMPLING_FREQ / 2);
 
@@ -112,8 +118,6 @@ static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
 
         if (band >= NUM_BANDS) band = NUM_BANDS - 1;
 
-
-
         newBands[band] += (float)vReal[i];
 
         bandCounts[band]++;
@@ -134,14 +138,14 @@ static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
 
 
 
-        // Normalize FFT magnitude and scale to half-screen height
-        // Use settings.adc_sensitivity for user-adjustable scaling
-        val = val / settings.adc_sensitivity;
+        // Normalize FFT magnitude to 0-1.0 range
+        // Use spectrum-specific sensitivity for user-adjustable scaling
+        val = val / settings.spectrum_sensitivity;
 
-        if (val > halfH) val = halfH;
+        if (val > 1.0f) val = 1.0f;
 
-        // Noise gate: filter out ADC noise below threshold
-        if (val < settings.noise_threshold) val = 0.0f;
+        // Noise gate: filter out ADC noise below threshold (spectrum-specific)
+        if (val < settings.spectrum_threshold) val = 0.0f;
 
 
 
@@ -200,6 +204,17 @@ void spectrum_compute_fft()
     FFT_L.compute(FFT_FORWARD);
 
     FFT_L.complexToMagnitude();
+
+    // Debug: Log first 10 bins to diagnose noise (uncomment to enable)
+    // static uint32_t logCounter = 0;
+    // if (++logCounter % 30 == 0) {  // Log every 30 frames (~1 sec)
+    //     Serial.print("FFT bins 0-9: ");
+    //     for (int i = 0; i < 10; i++) {
+    //         Serial.printf("%.1f ", vRealL[i]);
+    //     }
+    //     Serial.println();
+    // }
+
 
     process_bands(vRealL, bandValuesL, bandSmoothedL, peakValuesL, peakHoldCountL, halfH);
 
@@ -286,8 +301,8 @@ void spectrum_draw_bars(TFT_eSprite &spr)
 
 
         // ── Left channel: bars grow UPWARD from center ──
-
-        int barHL = (int)bandValuesL[i];
+        // Scale normalized 0-1.0 values to screen height
+        int barHL = (int)(bandValuesL[i] * halfH);
 
         if (barHL < 0) barHL = 0;
 
@@ -305,7 +320,7 @@ void spectrum_draw_bars(TFT_eSprite &spr)
 
 
 
-        int peakYL = (int)peakValuesL[i];
+        int peakYL = (int)(peakValuesL[i] * halfH);
 
         if (peakYL > 0 && peakYL < halfH) {
 
@@ -316,8 +331,8 @@ void spectrum_draw_bars(TFT_eSprite &spr)
 
 
         // ── Right channel: bars grow DOWNWARD from center ──
-
-        int barHR = (int)bandValuesR[i];
+        // Scale normalized 0-1.0 values to screen height
+        int barHR = (int)(bandValuesR[i] * halfH);
 
         if (barHR < 0) barHR = 0;
 
@@ -335,7 +350,7 @@ void spectrum_draw_bars(TFT_eSprite &spr)
 
 
 
-        int peakYR = (int)peakValuesR[i];
+        int peakYR = (int)(peakValuesR[i] * halfH);
 
         if (peakYR > 0 && peakYR < halfH) {
 

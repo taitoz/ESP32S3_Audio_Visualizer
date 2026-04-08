@@ -59,17 +59,29 @@ button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;
 <div class="grid-container">
 
 <div class="card">
-<h2>Visualization</h2>
+<h2>Visualization Mode</h2>
 <div class="row"><label>Mode</label>
 <div id="vizModes">
 <span class="chip" data-v="0" onclick="setViz(0)">Spectrum</span>
 <span class="chip" data-v="1" onclick="setViz(1)">VU LED</span>
 <span class="chip" data-v="2" onclick="setViz(2)">VU Needle</span>
 </div></div>
-<div class="row"><label>ADC Sensitivity</label><span id="sensVal">300</span></div>
-<div class="row"><input type="range" id="sens" min="50" max="2000" step="10" value="300"></div>
-<div class="row"><label>Noise Threshold</label><span id="noiseVal">0.05</span></div>
-<div class="row"><input type="range" id="noise" min="0" max="0.3" step="0.01" value="0.05"></div>
+</div>
+
+<div class="card">
+<h2>Spectrum Analyzer</h2>
+<div class="row"><label>Sensitivity</label><span id="specSensVal">3000</span></div>
+<div class="row"><input type="range" id="specSens" min="50" max="10000" step="50" value="3000"></div>
+<div class="row"><label>Noise Threshold</label><span id="specThrVal">0.20</span></div>
+<div class="row"><input type="range" id="specThr" min="0" max="0.5" step="0.01" value="0.20"></div>
+</div>
+
+<div class="card">
+<h2>VU Meter</h2>
+<div class="row"><label>Sensitivity</label><span id="vuSensVal">300</span></div>
+<div class="row"><input type="range" id="vuSens" min="50" max="2000" step="10" value="300"></div>
+<div class="row"><label>Noise Threshold</label><span id="vuThrVal">0.05</span></div>
+<div class="row"><input type="range" id="vuThr" min="0" max="0.3" step="0.01" value="0.05"></div>
 </div>
 
 <div class="card">
@@ -92,7 +104,7 @@ button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;
 </div>
 
 <div class="card">
-<h2>Spectrum Analyzer</h2>
+<h2>Spectrum Processing</h2>
 <div class="row"><label>Band Smoothing</label><span id="bandSmoothVal">0.70</span></div>
 <div class="row"><input type="range" id="bandSmooth" min="0.3" max="0.95" step="0.01" value="0.70"></div>
 <div class="row"><label>Peak Fall Rate</label><span id="peakFallVal">0.5</span></div>
@@ -102,7 +114,7 @@ button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;
 </div>
 
 <div class="card">
-<h2>VU Meter</h2>
+<h2>VU Meter Processing</h2>
 <div class="row"><label>VU Attack</label><span id="vuAttackVal">0.30</span></div>
 <div class="row"><input type="range" id="vuAttack" min="0.1" max="0.8" step="0.01" value="0.30"></div>
 <div class="row"><label>VU Release</label><span id="vuReleaseVal">0.50</span></div>
@@ -254,8 +266,10 @@ function handleResponse(data) {
     if (data.status || data.fps !== undefined) {
         if (ignoreNextUpdate) { ignoreNextUpdate = false; return; }
         if (data.viz_mode !== undefined) updateVizChips(data.viz_mode);
-        if (data.adc_sensitivity !== undefined) { $('#sens').value = data.adc_sensitivity; $('#sensVal').textContent = data.adc_sensitivity; }
-        if (data.noise_threshold !== undefined) { $('#noise').value = data.noise_threshold; $('#noiseVal').textContent = parseFloat(data.noise_threshold).toFixed(2); }
+        if (data.spectrum_sensitivity !== undefined) { $('#specSens').value = data.spectrum_sensitivity; $('#specSensVal').textContent = data.spectrum_sensitivity; }
+        if (data.spectrum_threshold !== undefined) { $('#specThr').value = data.spectrum_threshold; $('#specThrVal').textContent = parseFloat(data.spectrum_threshold).toFixed(2); }
+        if (data.vu_sensitivity !== undefined) { $('#vuSens').value = data.vu_sensitivity; $('#vuSensVal').textContent = data.vu_sensitivity; }
+        if (data.vu_threshold !== undefined) { $('#vuThr').value = data.vu_threshold; $('#vuThrVal').textContent = parseFloat(data.vu_threshold).toFixed(2); }
         if (data.brightness !== undefined) { $('#bri').value = data.brightness; $('#briVal').textContent = data.brightness; }
         if (data.auto_brightness !== undefined) {
             $('#autoBri').checked = data.auto_brightness;
@@ -304,8 +318,15 @@ function onSlider(id, valId, field, isFloat) {
     });
 }
 
-onSlider('#sens', '#sensVal', 'adc_sensitivity', true);  // Must be float for ESP32
-onSlider('#noise', '#noiseVal', 'noise_threshold', true);  // Noise gate threshold (float)
+// Spectrum Analyzer controls
+onSlider('#specSens', '#specSensVal', 'spectrum_sensitivity', true);
+onSlider('#specThr', '#specThrVal', 'spectrum_threshold', true);
+
+// VU Meter controls
+onSlider('#vuSens', '#vuSensVal', 'vu_sensitivity', true);
+onSlider('#vuThr', '#vuThrVal', 'vu_threshold', true);
+
+// DAC controls
 onSlider('#vol', '#volVal', 'dac_volume_l', false);  // Single volume control for both channels
 
 // Brightness controls

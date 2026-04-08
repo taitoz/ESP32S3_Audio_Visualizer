@@ -33,9 +33,11 @@ static void send_status()
     doc["auto_brightness"] = settings.auto_brightness;
     doc["brightness_min"]  = settings.brightness_min;
     doc["brightness_max"]  = settings.brightness_max;
-    doc["light_gain"]      = settings.light_gain;
-    doc["adc_sensitivity"] = settings.adc_sensitivity;
-    doc["noise_threshold"] = settings.noise_threshold;
+    doc["light_gain"]           = settings.light_gain;
+    doc["spectrum_sensitivity"] = settings.spectrum_sensitivity;
+    doc["spectrum_threshold"]   = settings.spectrum_threshold;
+    doc["vu_sensitivity"]       = settings.vu_sensitivity;
+    doc["vu_threshold"]         = settings.vu_threshold;
     doc["dac_volume_l"]    = settings.dac_volume_l;
     doc["dac_volume_r"]    = settings.dac_volume_r;
     doc["dac_filter"]      = settings.dac_filter;
@@ -117,15 +119,29 @@ static void process_command(const char *line)
             settings.light_gain = doc["light_gain"].as<float>();
             settings_save_field("light_gain");
         }
-        if (doc["adc_sensitivity"].is<float>()) {
-            settings.adc_sensitivity = doc["adc_sensitivity"].as<float>();
-            settings_save_field("adc_sens");
+        if (doc["spectrum_sensitivity"].is<float>()) {
+            settings.spectrum_sensitivity = doc["spectrum_sensitivity"].as<float>();
+            if (settings.spectrum_sensitivity < 50.0f) settings.spectrum_sensitivity = 50.0f;
+            if (settings.spectrum_sensitivity > 10000.0f) settings.spectrum_sensitivity = 10000.0f;
+            settings_save_field("spec_sens");
         }
-        if (doc["noise_threshold"].is<float>()) {
-            settings.noise_threshold = doc["noise_threshold"].as<float>();
-            if (settings.noise_threshold < 0.0f) settings.noise_threshold = 0.0f;
-            if (settings.noise_threshold > 0.5f) settings.noise_threshold = 0.5f;
-            settings_save_field("noise_thr");
+        if (doc["spectrum_threshold"].is<float>()) {
+            settings.spectrum_threshold = doc["spectrum_threshold"].as<float>();
+            if (settings.spectrum_threshold < 0.0f) settings.spectrum_threshold = 0.0f;
+            if (settings.spectrum_threshold > 1.0f) settings.spectrum_threshold = 1.0f;
+            settings_save_field("spec_thr");
+        }
+        if (doc["vu_sensitivity"].is<float>()) {
+            settings.vu_sensitivity = doc["vu_sensitivity"].as<float>();
+            if (settings.vu_sensitivity < 50.0f) settings.vu_sensitivity = 50.0f;
+            if (settings.vu_sensitivity > 10000.0f) settings.vu_sensitivity = 10000.0f;
+            settings_save_field("vu_sens");
+        }
+        if (doc["vu_threshold"].is<float>()) {
+            settings.vu_threshold = doc["vu_threshold"].as<float>();
+            if (settings.vu_threshold < 0.0f) settings.vu_threshold = 0.0f;
+            if (settings.vu_threshold > 1.0f) settings.vu_threshold = 1.0f;
+            settings_save_field("vu_thr");
         }
         if (doc["dac_volume_l"].is<int>()) {
             settings.dac_volume_l = doc["dac_volume_l"].as<uint8_t>();

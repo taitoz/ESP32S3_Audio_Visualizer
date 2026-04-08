@@ -157,12 +157,9 @@ void technics_vfd_draw_eq(TFT_eSPI &tft, const float *bands, int numBands) {
         }
         val = cnt > 0 ? sum / cnt : 0;
 
-        // Clamp 0..1
+        // Values are already normalized in spectrum.cpp, just clamp 0..1
         if (val < 0) val = 0;
         if (val > 1.0f) val = 1.0f;
-
-        // Noise gate: filter out ADC noise below threshold
-        if (val < settings.noise_threshold) val = 0.0f;
 
         // EMA smoothing: fast attack, slow release (using settings)
         if (val > eq_filtered[b])
@@ -222,11 +219,15 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
 
     for (int ch = 0; ch < 2; ch++) {
         float val = rms_in[ch];
+        
+        // Normalize with VU-specific sensitivity
+        val = val / settings.vu_sensitivity;
+        
         if (val < 0) val = 0;
         if (val > 1.0f) val = 1.0f;
 
-        // Noise gate: filter out ADC noise below threshold
-        if (val < settings.noise_threshold) val = 0.0f;
+        // Noise gate: filter out ADC noise below threshold (VU-specific)
+        if (val < settings.vu_threshold) val = 0.0f;
 
         // EMA: fast attack, slow release (using settings)
         if (val > vu_filtered[ch])

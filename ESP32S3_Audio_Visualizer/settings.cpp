@@ -17,8 +17,10 @@ void settings_init()
     settings.brightness_min  = 10;      // min auto-brightness
     settings.brightness_max  = 255;     // max auto-brightness
     settings.light_gain      = 1.0f;    // light sensor gain
-    settings.adc_sensitivity = 300.0f;  // spectrum divisor
-    settings.noise_threshold = 0.05f;   // 5% minimum signal level (filters ADC noise)
+    settings.spectrum_sensitivity = 3000.0f; // Spectrum FFT divisor (optimized for low noise)
+    settings.spectrum_threshold   = 0.20f;   // Spectrum noise gate
+    settings.vu_sensitivity       = 300.0f;  // VU meter divisor (more sensitive)
+    settings.vu_threshold         = 0.05f;   // VU meter noise gate
     settings.dac_volume_l    = 0x00;    // 0 dB
     settings.dac_volume_r    = 0x00;    // 0 dB
     settings.dac_filter      = 0;       // sharp roll-off
@@ -41,8 +43,10 @@ void settings_init()
     settings.brightness_min  = prefs.getUChar("bri_min",     settings.brightness_min);
     settings.brightness_max  = prefs.getUChar("bri_max",     settings.brightness_max);
     settings.light_gain      = prefs.getFloat("light_gain",  settings.light_gain);
-    settings.adc_sensitivity = prefs.getFloat("adc_sens",    settings.adc_sensitivity);
-    settings.noise_threshold = prefs.getFloat("noise_thr",   settings.noise_threshold);
+    settings.spectrum_sensitivity = prefs.getFloat("spec_sens",  settings.spectrum_sensitivity);
+    settings.spectrum_threshold   = prefs.getFloat("spec_thr",   settings.spectrum_threshold);
+    settings.vu_sensitivity       = prefs.getFloat("vu_sens",    settings.vu_sensitivity);
+    settings.vu_threshold         = prefs.getFloat("vu_thr",     settings.vu_threshold);
     settings.dac_volume_l    = prefs.getUChar("dac_vol_l",   settings.dac_volume_l);
     settings.dac_volume_r    = prefs.getUChar("dac_vol_r",   settings.dac_volume_r);
     settings.dac_filter      = prefs.getUChar("dac_filter",  settings.dac_filter);
@@ -67,8 +71,10 @@ void settings_save()
     prefs.putUChar("bri_min",     settings.brightness_min);
     prefs.putUChar("bri_max",     settings.brightness_max);
     prefs.putFloat("light_gain",  settings.light_gain);
-    prefs.putFloat("adc_sens",    settings.adc_sensitivity);
-    prefs.putFloat("noise_thr",   settings.noise_threshold);
+    prefs.putFloat("spec_sens",   settings.spectrum_sensitivity);
+    prefs.putFloat("spec_thr",    settings.spectrum_threshold);
+    prefs.putFloat("vu_sens",     settings.vu_sensitivity);
+    prefs.putFloat("vu_thr",      settings.vu_threshold);
     prefs.putUChar("dac_vol_l",   settings.dac_volume_l);
     prefs.putUChar("dac_vol_r",   settings.dac_volume_r);
     prefs.putUChar("dac_filter",  settings.dac_filter);
@@ -93,8 +99,10 @@ void settings_save_field(const char* field)
     else if (strcmp(field, "bri_min") == 0)     prefs.putUChar("bri_min",    settings.brightness_min);
     else if (strcmp(field, "bri_max") == 0)     prefs.putUChar("bri_max",    settings.brightness_max);
     else if (strcmp(field, "light_gain") == 0)  prefs.putFloat("light_gain", settings.light_gain);
-    else if (strcmp(field, "adc_sens") == 0)    prefs.putFloat("adc_sens",   settings.adc_sensitivity);
-    else if (strcmp(field, "noise_thr") == 0)   prefs.putFloat("noise_thr",  settings.noise_threshold);
+    else if (strcmp(field, "spec_sens") == 0)   prefs.putFloat("spec_sens",  settings.spectrum_sensitivity);
+    else if (strcmp(field, "spec_thr") == 0)    prefs.putFloat("spec_thr",   settings.spectrum_threshold);
+    else if (strcmp(field, "vu_sens") == 0)     prefs.putFloat("vu_sens",    settings.vu_sensitivity);
+    else if (strcmp(field, "vu_thr") == 0)      prefs.putFloat("vu_thr",     settings.vu_threshold);
     else if (strcmp(field, "dac_vol_l") == 0)   prefs.putUChar("dac_vol_l",  settings.dac_volume_l);
     else if (strcmp(field, "dac_vol_r") == 0)   prefs.putUChar("dac_vol_r",  settings.dac_volume_r);
     else if (strcmp(field, "dac_filter") == 0)  prefs.putUChar("dac_filter", settings.dac_filter);
