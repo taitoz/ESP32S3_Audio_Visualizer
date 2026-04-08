@@ -50,56 +50,38 @@ static inline uint16_t vfd_color_vu(int seg, int threshold, bool half) {
     return half ? VFD_CYAN_HALF : VFD_CYAN_FULL;
 }
 
-// ─── Draw Programmatic EQ Background into sprite ────────────────────────────
+// ─── Load EQ Background Image into sprite ───────────────────────────────────
 void technics_vfd_draw_bg_eq(TFT_eSPI &tft) {
-    sprite.fillSprite(TFT_BLACK);  // ОБЯЗАТЕЛЬНО: очищаем весь буфер кадра
+    sprite.fillSprite(TFT_BLACK);
 
-    // Vertical guide lines on sides of each band
-    // for (int b = 0; b < EQ_BANDS; b++) {
-    //     int x = EQ_X0 + b * (EQ_SEG_W + EQ_BAND_GAP);
-    //     sprite.drawFastVLine(x - 1, EQ_Y_BOTTOM - EQ_SPRITE_H, EQ_SPRITE_H, VFD_GRID);
-    //     sprite.drawFastVLine(x + EQ_SEG_W, EQ_Y_BOTTOM - EQ_SPRITE_H, EQ_SPRITE_H, VFD_GRID);
-    // }
-
-    // Horizontal 0dB line at ~80% height
-    // int zeroY = EQ_Y_BOTTOM - (int)(EQ_SPRITE_H * 0.8f);
-    // sprite.drawFastHLine(EQ_X0 - 5, zeroY, EQ_BANDS * (EQ_SEG_W + EQ_BAND_GAP), VFD_GRID);
-
-    // Frequency labels - now embedded in JPG background, no text drawing needed
-    // If needed, can use built-in font: sprite.drawString("63", cx, EQ_Y_BOTTOM + 4, 1);
-
-    // TODO: Load JPG background here
-    // sprite.pushImage(x, y, width, height, image_data);
-    // or tft.pushImage for direct to display
-
-    // No push here — caller pushes full frame
+    // TODO: Load background image from PROGMEM
+    // Option 1: RGB565 array (fastest, but large ~230KB)
+    // #include "bg_spectrum.h"
+    // sprite.pushImage(0, 0, BG_SPECTRUM_WIDTH, BG_SPECTRUM_HEIGHT, bg_spectrum);
+    
+    // Option 2: JPG from PROGMEM (smaller ~20-30KB, slower decode)
+    // #include "bg_spectrum_jpg.h"
+    // TJpgDec.drawJpg(0, 0, bg_spectrum_jpg, sizeof(bg_spectrum_jpg));
+    
+    // For now: minimal fallback (black screen)
+    // Once you have bg_spectrum.h or bg_spectrum_jpg.h, uncomment above
 }
 
-// ─── Draw Programmatic VU Background into sprite ────────────────────────────
+// ─── Load VU Background Image into sprite ───────────────────────────────────
 void technics_vfd_draw_bg_vu(TFT_eSPI &tft) {
-    sprite.fillSprite(TFT_BLACK);  // ОБЯЗАТЕЛЬНО: очищаем весь буфер кадра
+    sprite.fillSprite(TFT_BLACK);
 
-    // Channel labels and dB scale - now embedded in JPG background
-    // Grid lines only
-    // sprite.setTextColor(VFD_GRID, VFD_BG);
-    // const int db_segs[] = {0, 2, 4, VU_0DB_SEG, 7, VU_MAX_SEGS - 1};
-    // for (int i = 0; i < 6; i++) {
-    //     int x = VU_X0 + db_segs[i] * (VU_SEG_W + VU_SEG_GAP);
-    //     sprite.drawFastVLine(x, VU_Y_L - 8, 5, VFD_GRID);
-    //     sprite.drawFastVLine(x, VU_Y_R + VU_SEG_H + 3, 5, VFD_GRID);
-    // }
-
-    // Horizontal guide lines
-    // sprite.drawFastHLine(VU_X0, VU_Y_L - 1, VU_BAR_W, VFD_GRID);
-    // sprite.drawFastHLine(VU_X0, VU_Y_L + VU_SEG_H + 1, VU_BAR_W, VFD_GRID);
-    // sprite.drawFastHLine(VU_X0, VU_Y_R - 1, VU_BAR_W, VFD_GRID);
-    // sprite.drawFastHLine(VU_X0, VU_Y_R + VU_SEG_H + 1, VU_BAR_W, VFD_GRID);
-
-    // TODO: Load JPG background here
-    // sprite.pushImage(x, y, width, height, image_data);
-    // or tft.pushImage for direct to display
-
-    // No push here — caller pushes full frame
+    // TODO: Load background image from PROGMEM
+    // Option 1: RGB565 array (fastest, but large ~230KB)
+    // #include "bg_vu.h"
+    // sprite.pushImage(0, 0, BG_VU_WIDTH, BG_VU_HEIGHT, bg_vu);
+    
+    // Option 2: JPG from PROGMEM (smaller ~20-30KB, slower decode)
+    // #include "bg_vu_jpg.h"
+    // TJpgDec.drawJpg(0, 0, bg_vu_jpg, sizeof(bg_vu_jpg));
+    
+    // For now: minimal fallback (black screen)
+    // Once you have bg_vu.h or bg_vu_jpg.h, uncomment above
 }
 
 // ─── Init ───────────────────────────────────────────────────────────────────

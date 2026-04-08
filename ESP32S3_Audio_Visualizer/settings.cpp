@@ -28,11 +28,11 @@ void settings_init()
     settings.dac_mute        = false;
     settings.mouse_sens      = 1.0f;
     settings.mouse_mode      = 0;       // touchpad
-    settings.band_smoothing  = 0.7f;
-    settings.peak_fall_rate  = 0.5f;
-    settings.peak_hold_frames = 15;
-    settings.vu_attack       = 0.3f;
-    settings.vu_release      = 0.5f;
+    settings.band_smoothing  = 0.85f;   // Higher = smoother, more "tягучее" movement
+    settings.peak_fall_rate  = 0.3f;    // Slower fall = more fluid peaks
+    settings.peak_hold_frames = 20;     // Longer hold for visual stability
+    settings.vu_attack       = 0.2f;    // Slower attack = smoother rise
+    settings.vu_release      = 0.7f;    // Slower release = smoother fall
 
     // Load saved values (if they exist)
     prefs.begin("config", true);  // read-only
