@@ -220,8 +220,9 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
     for (int ch = 0; ch < 2; ch++) {
         float val = rms_in[ch];
         
-        // Normalize with VU-specific sensitivity
-        val = val / settings.vu_sensitivity;
+        // RMS is already normalized to 0-1.0, apply VU gain
+        // vu_sensitivity acts as gain multiplier (1.0 = unity, 2.0 = +6dB, etc.)
+        val = val * (settings.vu_sensitivity / 1000.0f);
         
         if (val < 0) val = 0;
         if (val > 1.0f) val = 1.0f;

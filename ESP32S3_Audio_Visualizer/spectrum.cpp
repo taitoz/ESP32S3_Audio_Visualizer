@@ -139,8 +139,9 @@ static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
 
 
         // Normalize FFT magnitude to 0-1.0 range
-        // Use spectrum-specific sensitivity for user-adjustable scaling
-        val = val / settings.spectrum_sensitivity;
+        // spectrum_sensitivity acts as gain multiplier (lower = more sensitive)
+        // Typical FFT magnitude range: 0-10000+, divide by base then multiply by gain
+        val = (val / 10000.0f) * (settings.spectrum_sensitivity / 1000.0f);
 
         if (val > 1.0f) val = 1.0f;
 

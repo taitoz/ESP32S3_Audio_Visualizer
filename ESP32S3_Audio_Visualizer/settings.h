@@ -23,12 +23,12 @@ typedef struct {
     float light_gain;
     
     // Audio ADC - Spectrum Analyzer
-    float spectrum_sensitivity;  // Spectrum FFT divisor
-    float spectrum_threshold;    // Spectrum noise gate
+    float spectrum_sensitivity;  // Spectrum gain multiplier (1000 = 0dB unity gain, 2000 = +6dB)
+    float spectrum_threshold;    // Spectrum noise gate (0-1.0 range)
     
     // Audio ADC - VU Meter
-    float vu_sensitivity;        // VU meter divisor
-    float vu_threshold;          // VU meter noise gate
+    float vu_sensitivity;        // VU meter gain multiplier (1000 = 0dB unity gain, 2000 = +6dB)
+    float vu_threshold;          // VU meter noise gate (0-1.0 range)
     
     // DAC (AK4493)
     uint8_t dac_volume_l;

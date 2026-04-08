@@ -17,9 +17,9 @@ void settings_init()
     settings.brightness_min  = 10;      // min auto-brightness
     settings.brightness_max  = 255;     // max auto-brightness
     settings.light_gain      = 1.0f;    // light sensor gain
-    settings.spectrum_sensitivity = 3000.0f; // Spectrum FFT divisor (optimized for low noise)
+    settings.spectrum_sensitivity = 2200.0f; // Spectrum gain multiplier (1000 = unity, 2000 = +6dB)
     settings.spectrum_threshold   = 0.20f;   // Spectrum noise gate
-    settings.vu_sensitivity       = 300.0f;  // VU meter divisor (more sensitive)
+    settings.vu_sensitivity       = 2200.0f; // VU meter gain multiplier (1000 = unity, 2000 = +6dB)
     settings.vu_threshold         = 0.05f;   // VU meter noise gate
     settings.dac_volume_l    = 0x00;    // 0 dB
     settings.dac_volume_r    = 0x00;    // 0 dB

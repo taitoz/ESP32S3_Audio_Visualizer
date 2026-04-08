@@ -70,17 +70,17 @@ button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;
 
 <div class="card">
 <h2>Spectrum Analyzer</h2>
-<div class="row"><label>Sensitivity</label><span id="specSensVal">3000</span></div>
-<div class="row"><input type="range" id="specSens" min="50" max="10000" step="50" value="3000"></div>
-<div class="row"><label>Noise Threshold</label><span id="specThrVal">0.20</span></div>
-<div class="row"><input type="range" id="specThr" min="0" max="0.5" step="0.01" value="0.20"></div>
+<div class="row"><label>Gain (1000=0dB)</label><span id="specSensVal">2200</span></div>
+<div class="row"><input type="range" id="specSens" min="100" max="5000" step="50" value="2200"></div>
+<div class="row"><label>Noise Gate</label><span id="specThrVal">0.20</span></div>
+<div class="row"><input type="range" id="specThr" min="0" max="0.3" step="0.01" value="0.20"></div>
 </div>
 
 <div class="card">
 <h2>VU Meter</h2>
-<div class="row"><label>Sensitivity</label><span id="vuSensVal">300</span></div>
-<div class="row"><input type="range" id="vuSens" min="50" max="2000" step="10" value="300"></div>
-<div class="row"><label>Noise Threshold</label><span id="vuThrVal">0.05</span></div>
+<div class="row"><label>Gain (1000=0dB)</label><span id="vuSensVal">2200</span></div>
+<div class="row"><input type="range" id="vuSens" min="100" max="5000" step="50" value="2200"></div>
+<div class="row"><label>Noise Gate</label><span id="vuThrVal">0.05</span></div>
 <div class="row"><input type="range" id="vuThr" min="0" max="0.3" step="0.01" value="0.05"></div>
 </div>
 
