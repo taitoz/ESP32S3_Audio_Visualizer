@@ -17,12 +17,14 @@ typedef struct {
     
     // Display
     uint8_t brightness;
+    bool auto_brightness;
     uint8_t brightness_min;
     uint8_t brightness_max;
     float light_gain;
     
     // Audio ADC
     float adc_sensitivity;
+    float noise_threshold;  // Minimum signal level to display (filters ADC noise)
     
     // DAC (AK4493)
     uint8_t dac_volume_l;

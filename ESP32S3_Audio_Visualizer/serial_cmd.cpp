@@ -26,14 +26,16 @@ static unsigned long lastStatusPush = 0;
 // Send full status as JSON line
 static void send_status()
 {
-    JsonDocument doc;
+    StaticJsonDocument<2048> doc;
     doc["status"]          = true;
     doc["viz_mode"]        = settings.viz_mode;
     doc["brightness"]      = settings.brightness;
+    doc["auto_brightness"] = settings.auto_brightness;
     doc["brightness_min"]  = settings.brightness_min;
     doc["brightness_max"]  = settings.brightness_max;
     doc["light_gain"]      = settings.light_gain;
     doc["adc_sensitivity"] = settings.adc_sensitivity;
+    doc["noise_threshold"] = settings.noise_threshold;
     doc["dac_volume_l"]    = settings.dac_volume_l;
     doc["dac_volume_r"]    = settings.dac_volume_r;
     doc["dac_filter"]      = settings.dac_filter;
@@ -57,7 +59,7 @@ static void send_status()
 // Process one complete JSON line
 static void process_command(const char *line)
 {
-    JsonDocument doc;
+    StaticJsonDocument<2048> doc;
     DeserializationError err = deserializeJson(doc, line);
     if (err) {
         Serial.println("{\"error\":\"invalid json\"}");
@@ -87,6 +89,20 @@ static void process_command(const char *line)
             settings.viz_mode = doc["viz_mode"].as<uint8_t>();
             settings_save_field("viz_mode");
         }
+        if (doc["brightness"].is<int>()) {
+            settings.brightness = doc["brightness"].as<uint8_t>();
+            if (!settings.auto_brightness) {
+                analogWrite(TFT_BL, settings.brightness);
+            }
+            settings_save_field("brightness");
+        }
+        if (doc["auto_brightness"].is<bool>()) {
+            settings.auto_brightness = doc["auto_brightness"].as<bool>();
+            if (!settings.auto_brightness) {
+                analogWrite(TFT_BL, settings.brightness);
+            }
+            settings_save_field("auto_bri");
+        }
         if (doc["brightness_min"].is<int>()) {
             settings.brightness_min = doc["brightness_min"].as<uint8_t>();
             if (settings.brightness_min < 1) settings.brightness_min = 1;
@@ -104,6 +120,12 @@ static void process_command(const char *line)
         if (doc["adc_sensitivity"].is<float>()) {
             settings.adc_sensitivity = doc["adc_sensitivity"].as<float>();
             settings_save_field("adc_sens");
+        }
+        if (doc["noise_threshold"].is<float>()) {
+            settings.noise_threshold = doc["noise_threshold"].as<float>();
+            if (settings.noise_threshold < 0.0f) settings.noise_threshold = 0.0f;
+            if (settings.noise_threshold > 0.5f) settings.noise_threshold = 0.5f;
+            settings_save_field("noise_thr");
         }
         if (doc["dac_volume_l"].is<int>()) {
             settings.dac_volume_l = doc["dac_volume_l"].as<uint8_t>();

@@ -220,8 +220,9 @@ void touchTask(void *param)
         serial_cmd_poll();
 
         // Auto-brightness from light sensor (once per second)
+        // ONLY if auto_brightness is enabled - prevents ADC noise from affecting display
         static uint32_t lastLightCheck = 0;
-        if (millis() - lastLightCheck > 1000) {
+        if (settings.auto_brightness && (millis() - lastLightCheck > 1000)) {
             int raw = audio_read_light_sensor();  // Use shared ADC1 handle (0-4095)
             
             // Apply gain and map to brightness range

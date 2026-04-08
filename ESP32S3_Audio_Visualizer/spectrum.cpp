@@ -140,6 +140,9 @@ static void process_bands(float *vReal, float *bandValues, float *bandSmoothed,
 
         if (val > halfH) val = halfH;
 
+        // Noise gate: filter out ADC noise below threshold
+        if (val < settings.noise_threshold) val = 0.0f;
+
 
 
         // Exponential smoothing

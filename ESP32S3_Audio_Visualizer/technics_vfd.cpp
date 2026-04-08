@@ -1,5 +1,6 @@
 #include "technics_vfd.h"
 #include "AXS15231B.h"
+#include "settings.h"
 #include <TJpg_Decoder.h>
 
 /*******************************************************************************
@@ -160,11 +161,14 @@ void technics_vfd_draw_eq(TFT_eSPI &tft, const float *bands, int numBands) {
         if (val < 0) val = 0;
         if (val > 1.0f) val = 1.0f;
 
-        // EMA smoothing: fast attack, slow release
+        // Noise gate: filter out ADC noise below threshold
+        if (val < settings.noise_threshold) val = 0.0f;
+
+        // EMA smoothing: fast attack, slow release (using settings)
         if (val > eq_filtered[b])
-            eq_filtered[b] = 0.7f * val + 0.3f * eq_filtered[b];
+            eq_filtered[b] = (1.0f - settings.band_smoothing) * val + settings.band_smoothing * eq_filtered[b];
         else
-            eq_filtered[b] = 0.15f * val + 0.85f * eq_filtered[b];
+            eq_filtered[b] = (1.0f - settings.band_smoothing) * 0.3f * val + (1.0f - (1.0f - settings.band_smoothing) * 0.3f) * eq_filtered[b];
 
         // Compute segments: full + half
         float seg_f = eq_filtered[b] * EQ_MAX_SEGS;
@@ -221,11 +225,14 @@ void technics_vfd_draw_vu(TFT_eSPI &tft, float rmsL, float rmsR) {
         if (val < 0) val = 0;
         if (val > 1.0f) val = 1.0f;
 
-        // EMA: instant attack, viscous release
+        // Noise gate: filter out ADC noise below threshold
+        if (val < settings.noise_threshold) val = 0.0f;
+
+        // EMA: fast attack, slow release (using settings)
         if (val > vu_filtered[ch])
-            vu_filtered[ch] = 0.9f * val + 0.1f * vu_filtered[ch];
+            vu_filtered[ch] = settings.vu_attack * val + (1.0f - settings.vu_attack) * vu_filtered[ch];
         else
-            vu_filtered[ch] = 0.15f * val + 0.85f * vu_filtered[ch];
+            vu_filtered[ch] = settings.vu_release * val + (1.0f - settings.vu_release) * vu_filtered[ch];
 
         int lit = (int)(vu_filtered[ch] * VU_MAX_SEGS);
         if (lit > VU_MAX_SEGS) lit = VU_MAX_SEGS;

@@ -68,10 +68,20 @@ button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;
 </div></div>
 <div class="row"><label>ADC Sensitivity</label><span id="sensVal">300</span></div>
 <div class="row"><input type="range" id="sens" min="50" max="2000" step="10" value="300"></div>
+<div class="row"><label>Noise Threshold</label><span id="noiseVal">0.05</span></div>
+<div class="row"><input type="range" id="noise" min="0" max="0.3" step="0.01" value="0.05"></div>
 </div>
 
 <div class="card">
 <h2>Display Brightness</h2>
+<div class="row"><label>Auto-Brightness</label>
+<label class="toggle"><input type="checkbox" id="autoBri" checked><span class="slider"></span></label>
+</div>
+<div id="manualBriControls">
+<div class="row"><label>Manual Brightness</label><span id="briVal">128</span></div>
+<div class="row"><input type="range" id="bri" min="0" max="255" value="128"></div>
+</div>
+<div id="autoBriControls">
 <div class="row"><label>Min Brightness</label><span id="briMinVal">10</span></div>
 <div class="row"><input type="range" id="briMin" min="1" max="255" value="10"></div>
 <div class="row"><label>Max Brightness</label><span id="briMaxVal">255</span></div>
@@ -79,23 +89,24 @@ button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;
 <div class="row"><label>Sensor Gain</label><span id="lightGainVal">1.0</span></div>
 <div class="row"><input type="range" id="lightGain" min="0.1" max="5.0" step="0.1" value="1.0"></div>
 </div>
+</div>
 
 <div class="card">
 <h2>Spectrum Analyzer</h2>
 <div class="row"><label>Band Smoothing</label><span id="bandSmoothVal">0.70</span></div>
-<div class="row"><input type="range" id="bandSmooth" min="0" max="0.99" step="0.01" value="0.70"></div>
+<div class="row"><input type="range" id="bandSmooth" min="0.3" max="0.95" step="0.01" value="0.70"></div>
 <div class="row"><label>Peak Fall Rate</label><span id="peakFallVal">0.5</span></div>
-<div class="row"><input type="range" id="peakFall" min="0.1" max="3.0" step="0.1" value="0.5"></div>
+<div class="row"><input type="range" id="peakFall" min="0.3" max="2.0" step="0.1" value="0.5"></div>
 <div class="row"><label>Peak Hold (frames)</label><span id="peakHoldVal">15</span></div>
-<div class="row"><input type="range" id="peakHold" min="0" max="60" step="1" value="15"></div>
+<div class="row"><input type="range" id="peakHold" min="5" max="60" step="1" value="15"></div>
 </div>
 
 <div class="card">
 <h2>VU Meter</h2>
 <div class="row"><label>VU Attack</label><span id="vuAttackVal">0.30</span></div>
-<div class="row"><input type="range" id="vuAttack" min="0.01" max="1.0" step="0.01" value="0.30"></div>
+<div class="row"><input type="range" id="vuAttack" min="0.1" max="0.8" step="0.01" value="0.30"></div>
 <div class="row"><label>VU Release</label><span id="vuReleaseVal">0.50</span></div>
-<div class="row"><input type="range" id="vuRelease" min="0.01" max="1.0" step="0.01" value="0.50"></div>
+<div class="row"><input type="range" id="vuRelease" min="0.1" max="0.8" step="0.01" value="0.50"></div>
 </div>
 
 <div class="card">
@@ -244,6 +255,13 @@ function handleResponse(data) {
         if (ignoreNextUpdate) { ignoreNextUpdate = false; return; }
         if (data.viz_mode !== undefined) updateVizChips(data.viz_mode);
         if (data.adc_sensitivity !== undefined) { $('#sens').value = data.adc_sensitivity; $('#sensVal').textContent = data.adc_sensitivity; }
+        if (data.noise_threshold !== undefined) { $('#noise').value = data.noise_threshold; $('#noiseVal').textContent = parseFloat(data.noise_threshold).toFixed(2); }
+        if (data.brightness !== undefined) { $('#bri').value = data.brightness; $('#briVal').textContent = data.brightness; }
+        if (data.auto_brightness !== undefined) {
+            $('#autoBri').checked = data.auto_brightness;
+            $('#manualBriControls').style.display = data.auto_brightness ? 'none' : 'block';
+            $('#autoBriControls').style.display = data.auto_brightness ? 'block' : 'none';
+        }
         if (data.dac_volume_l !== undefined) { $('#vol').value = data.dac_volume_l; $('#volVal').textContent = data.dac_volume_l; }
         if (data.dac_filter !== undefined) { 
             const radio = $(`input[name="filter"][value="${data.dac_filter}"]`);
@@ -287,7 +305,16 @@ function onSlider(id, valId, field, isFloat) {
 }
 
 onSlider('#sens', '#sensVal', 'adc_sensitivity', true);  // Must be float for ESP32
+onSlider('#noise', '#noiseVal', 'noise_threshold', true);  // Noise gate threshold (float)
 onSlider('#vol', '#volVal', 'dac_volume_l', false);  // Single volume control for both channels
+
+// Brightness controls
+onSlider('#bri', '#briVal', 'brightness', false);
+$('#autoBri').addEventListener('change', e => {
+    sendCmd({cmd:'set', auto_brightness: e.target.checked});
+    $('#manualBriControls').style.display = e.target.checked ? 'none' : 'block';
+    $('#autoBriControls').style.display = e.target.checked ? 'block' : 'none';
+});
 
 // Auto-brightness sliders
 onSlider('#briMin', '#briMinVal', 'brightness_min', false);

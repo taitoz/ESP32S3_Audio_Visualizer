@@ -13,10 +13,12 @@ void settings_init()
     // Defaults
     settings.viz_mode        = 0;       // VIS_EQ
     settings.brightness      = 128;     // 50% default brightness
+    settings.auto_brightness = true;    // auto-brightness enabled by default
     settings.brightness_min  = 10;      // min auto-brightness
     settings.brightness_max  = 255;     // max auto-brightness
     settings.light_gain      = 1.0f;    // light sensor gain
     settings.adc_sensitivity = 300.0f;  // spectrum divisor
+    settings.noise_threshold = 0.05f;   // 5% minimum signal level (filters ADC noise)
     settings.dac_volume_l    = 0x00;    // 0 dB
     settings.dac_volume_r    = 0x00;    // 0 dB
     settings.dac_filter      = 0;       // sharp roll-off
@@ -35,10 +37,12 @@ void settings_init()
     settings.viz_mode        = prefs.getUChar("viz_mode",    settings.viz_mode);
     if (settings.viz_mode >= 2) settings.viz_mode = 0;  // Clamp to valid modes (VIS_EQ=0, VIS_VU=1)
     settings.brightness      = prefs.getUChar("brightness",  settings.brightness);
+    settings.auto_brightness = prefs.getBool("auto_bri",     settings.auto_brightness);
     settings.brightness_min  = prefs.getUChar("bri_min",     settings.brightness_min);
     settings.brightness_max  = prefs.getUChar("bri_max",     settings.brightness_max);
     settings.light_gain      = prefs.getFloat("light_gain",  settings.light_gain);
     settings.adc_sensitivity = prefs.getFloat("adc_sens",    settings.adc_sensitivity);
+    settings.noise_threshold = prefs.getFloat("noise_thr",   settings.noise_threshold);
     settings.dac_volume_l    = prefs.getUChar("dac_vol_l",   settings.dac_volume_l);
     settings.dac_volume_r    = prefs.getUChar("dac_vol_r",   settings.dac_volume_r);
     settings.dac_filter      = prefs.getUChar("dac_filter",  settings.dac_filter);
@@ -59,10 +63,12 @@ void settings_save()
     prefs.begin("config", false);  // read-write
     prefs.putUChar("viz_mode",    settings.viz_mode);
     prefs.putUChar("brightness",  settings.brightness);
+    prefs.putBool("auto_bri",     settings.auto_brightness);
     prefs.putUChar("bri_min",     settings.brightness_min);
     prefs.putUChar("bri_max",     settings.brightness_max);
     prefs.putFloat("light_gain",  settings.light_gain);
     prefs.putFloat("adc_sens",    settings.adc_sensitivity);
+    prefs.putFloat("noise_thr",   settings.noise_threshold);
     prefs.putUChar("dac_vol_l",   settings.dac_volume_l);
     prefs.putUChar("dac_vol_r",   settings.dac_volume_r);
     prefs.putUChar("dac_filter",  settings.dac_filter);
@@ -83,10 +89,12 @@ void settings_save_field(const char* field)
     prefs.begin("config", false);
     if (strcmp(field, "viz_mode") == 0)        prefs.putUChar("viz_mode",   settings.viz_mode);
     else if (strcmp(field, "brightness") == 0)  prefs.putUChar("brightness", settings.brightness);
+    else if (strcmp(field, "auto_bri") == 0)    prefs.putBool("auto_bri",    settings.auto_brightness);
     else if (strcmp(field, "bri_min") == 0)     prefs.putUChar("bri_min",    settings.brightness_min);
     else if (strcmp(field, "bri_max") == 0)     prefs.putUChar("bri_max",    settings.brightness_max);
     else if (strcmp(field, "light_gain") == 0)  prefs.putFloat("light_gain", settings.light_gain);
     else if (strcmp(field, "adc_sens") == 0)    prefs.putFloat("adc_sens",   settings.adc_sensitivity);
+    else if (strcmp(field, "noise_thr") == 0)   prefs.putFloat("noise_thr",  settings.noise_threshold);
     else if (strcmp(field, "dac_vol_l") == 0)   prefs.putUChar("dac_vol_l",  settings.dac_volume_l);
     else if (strcmp(field, "dac_vol_r") == 0)   prefs.putUChar("dac_vol_r",  settings.dac_volume_r);
     else if (strcmp(field, "dac_filter") == 0)  prefs.putUChar("dac_filter", settings.dac_filter);
