@@ -22,9 +22,11 @@ input[type=range]{width:55%;accent-color:#00bcd4;height:20px}
 select{background:#2a2a2a;color:#e0e0e0;border:1px solid #444;border-radius:4px;padding:4px 8px;font-size:0.85em}
 button{background:#00bcd4;color:#000;border:none;border-radius:4px;padding:8px 16px;font-weight:600;cursor:pointer;font-size:0.85em}
 button:active{opacity:0.7}
+button:hover{opacity:0.9}
 button.danger{background:#f44336;color:#fff}
 button.connect{background:#4caf50;color:#fff;font-size:1em;padding:10px 24px;width:100%}
 button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;width:100%}
+button.small{padding:6px 12px;font-size:0.8em}
 .status-bar{font-size:0.8em;color:#666;text-align:center;margin:8px 0;padding:6px;background:#1a1a1a;border-radius:4px}
 .status-bar.connected{color:#4caf50;border:1px solid #4caf50}
 .status-bar.disconnected{color:#f44336;border:1px solid #333}
@@ -37,7 +39,7 @@ button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;
 .toggle .slider:before{content:'';position:absolute;width:18px;height:18px;left:2px;bottom:2px;background:#fff;border-radius:50%;transition:.2s}
 .toggle input:checked+.slider:before{transform:translateX(20px)}
 .hidden{display:none}
-#log{background:#111;border:1px solid #333;border-radius:4px;padding:8px;font-family:monospace;font-size:0.75em;color:#888;max-height:120px;overflow-y:auto;margin-top:8px;white-space:pre-wrap;word-break:break-all}
+#log{background:#111;border:1px solid #333;border-radius:4px;padding:8px;font-family:monospace;font-size:1.3em;color:#888;max-height:900px;overflow-y:auto;margin-top:8px;white-space:pre-wrap;word-break:break-all}
 </style>
 </head>
 <body>
@@ -122,6 +124,35 @@ button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;
 </div>
 
 <div class="card">
+<h2>RTC Clock (DS3231)</h2>
+<div class="row"><label>Current Time</label><span id="rtcTime">--:--:--</span></div>
+<div class="row"><label>Date</label><span id="rtcDate">----/--/--</span></div>
+<div class="row"><label>Temperature</label><span id="rtcTemp">--°C</span></div>
+<h2 style="margin-top:12px">Set Time</h2>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:8px">
+<input type="number" id="rtcHour" placeholder="HH" min="0" max="23" style="width:100%;padding:6px;background:#2a2a2a;border:1px solid #444;border-radius:4px;color:#e0e0e0;text-align:center">
+<input type="number" id="rtcMin" placeholder="MM" min="0" max="59" style="width:100%;padding:6px;background:#2a2a2a;border:1px solid #444;border-radius:4px;color:#e0e0e0;text-align:center">
+<input type="number" id="rtcSec" placeholder="SS" min="0" max="59" style="width:100%;padding:6px;background:#2a2a2a;border:1px solid #444;border-radius:4px;color:#e0e0e0;text-align:center">
+</div>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:8px">
+<input type="number" id="rtcYear" placeholder="YYYY" min="2020" max="2099" style="width:100%;padding:6px;background:#2a2a2a;border:1px solid #444;border-radius:4px;color:#e0e0e0;text-align:center">
+<input type="number" id="rtcMonth" placeholder="MM" min="1" max="12" style="width:100%;padding:6px;background:#2a2a2a;border:1px solid #444;border-radius:4px;color:#e0e0e0;text-align:center">
+<input type="number" id="rtcDay" placeholder="DD" min="1" max="31" style="width:100%;padding:6px;background:#2a2a2a;border:1px solid #444;border-radius:4px;color:#e0e0e0;text-align:center">
+</div>
+<button onclick="setRTCTime()" style="width:100%">&#128337; Set RTC Time</button>
+</div>
+
+<div class="card">
+<h2>Gear VR Controller</h2>
+<div class="row"><label>Status</label><span id="gearvrStatus" style="color:#f44336">Disconnected</span></div>
+<div class="row"><label>Battery</label><span id="gearvrBattery">--%</span></div>
+<div class="row"><label>Touchpad</label><span id="gearvrTouch">X:--- Y:---</span></div>
+<button id="gearvrConnectBtn" onclick="connectGearVR()" style="width:100%;margin-top:8px">&#127918; Connect Gear VR</button>
+<button id="gearvrDisconnectBtn" onclick="disconnectGearVR()" style="width:100%;margin-top:8px;display:none" class="danger">&#10005; Disconnect</button>
+<p style="font-size:0.75em;color:#666;margin-top:8px;text-align:center">MAC: 2C:BA:BA:2A:D4:05</p>
+</div>
+
+<div class="card">
 <h2>DAC (AK4493)</h2>
 <div class="row"><label>Volume</label><span id="volVal">0</span></div>
 <div class="row"><input type="range" id="vol" min="0" max="255" value="0"></div>
@@ -142,6 +173,10 @@ button.disconnect{background:#f44336;color:#fff;font-size:1em;padding:10px 24px;
 <br>
 <div class="card full-width">
 <h2>Serial Log</h2>
+<div style="display:flex;gap:8px;margin-bottom:8px">
+<button class="small" onclick="requestStatus()">🔄 Refresh Status</button>
+<button class="small" onclick="clearLog()">🗑️ Clear Log</button>
+</div>
 <div id="log"></div>
 </div>
 
@@ -165,6 +200,19 @@ function log(msg) {
     // Keep log short
     const lines = el.textContent.split('\n');
     if (lines.length > 100) el.textContent = lines.slice(-60).join('\n');
+}
+
+function clearLog() {
+    const el = $('#log');
+    if (el) el.textContent = '';
+}
+
+function requestStatus() {
+    if (!port || !port.readable) {
+        log('Not connected');
+        return;
+    }
+    sendCmd({cmd:'status'});
 }
 
 async function connectSerial() {
@@ -225,11 +273,16 @@ async function readLoop() {
             for (const line of lines) {
                 const trimmed = line.trim();
                 if (!trimmed) continue;
+                
+                // Log all incoming data
+                log('< ' + trimmed);
+                
+                // Try to parse as JSON and handle
                 try {
                     const data = JSON.parse(trimmed);
                     handleResponse(data);
                 } catch(e) {
-                    log('< ' + trimmed);
+                    // Not JSON, already logged above
                 }
             }
         }
@@ -277,6 +330,13 @@ function handleResponse(data) {
             $('#autoBriControls').style.display = data.auto_brightness ? 'block' : 'none';
         }
         if (data.dac_volume_l !== undefined) { $('#vol').value = data.dac_volume_l; $('#volVal').textContent = data.dac_volume_l; }
+        
+        // Update RTC display
+        updateRTCDisplay(data);
+        
+        // Update Gear VR display
+        updateGearVRDisplay(data);
+        
         if (data.dac_filter !== undefined) { 
             const radio = $(`input[name="filter"][value="${data.dac_filter}"]`);
             if (radio) radio.checked = true;
@@ -341,6 +401,60 @@ $('#autoBri').addEventListener('change', e => {
 onSlider('#briMin', '#briMinVal', 'brightness_min', false);
 onSlider('#briMax', '#briMaxVal', 'brightness_max', false);
 onSlider('#lightGain', '#lightGainVal', 'light_gain', true);
+
+// RTC Clock functions
+function setRTCTime() {
+    const year = parseInt($('#rtcYear').value) || 2026;
+    const month = parseInt($('#rtcMonth').value) || 1;
+    const day = parseInt($('#rtcDay').value) || 1;
+    const hour = parseInt($('#rtcHour').value) || 0;
+    const min = parseInt($('#rtcMin').value) || 0;
+    const sec = parseInt($('#rtcSec').value) || 0;
+    
+    sendCmd({cmd:'rtc_set', year, month, day, hour, min, sec});
+    log(`Setting RTC: ${year}-${month}-${day} ${hour}:${min}:${sec}`);
+}
+
+function updateRTCDisplay(data) {
+    if (data.rtc_time) {
+        $('#rtcTime').textContent = data.rtc_time;
+    }
+    if (data.rtc_date) {
+        $('#rtcDate').textContent = data.rtc_date;
+    }
+    if (data.rtc_temp !== undefined) {
+        $('#rtcTemp').textContent = data.rtc_temp.toFixed(1) + '°C';
+    }
+}
+
+// Gear VR Controller functions
+function connectGearVR() {
+    sendCmd({cmd:'gearvr_connect'});
+    log('Connecting to Gear VR Controller...');
+}
+
+function disconnectGearVR() {
+    sendCmd({cmd:'gearvr_disconnect'});
+    log('Disconnecting Gear VR Controller...');
+}
+
+function updateGearVRDisplay(data) {
+    if (data.gearvr_connected !== undefined) {
+        const connected = data.gearvr_connected;
+        $('#gearvrStatus').textContent = connected ? 'Connected' : 'Disconnected';
+        $('#gearvrStatus').style.color = connected ? '#4caf50' : '#f44336';
+        $('#gearvrConnectBtn').style.display = connected ? 'none' : 'block';
+        $('#gearvrDisconnectBtn').style.display = connected ? 'block' : 'none';
+    }
+    if (data.gearvr_battery !== undefined) {
+        $('#gearvrBattery').textContent = data.gearvr_battery + '%';
+    }
+    if (data.gearvr_touch_x !== undefined && data.gearvr_touch_y !== undefined) {
+        $('#gearvrTouch').textContent = `X:${data.gearvr_touch_x} Y:${data.gearvr_touch_y}`;
+    }
+}
+
+// No automatic status polling - status is sent in response to commands
 
 // Radio buttons for DAC filter
 $$('input[name="filter"]').forEach(radio => {

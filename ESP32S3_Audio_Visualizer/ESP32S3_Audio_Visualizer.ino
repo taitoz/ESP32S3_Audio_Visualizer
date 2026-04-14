@@ -1,16 +1,13 @@
 /*******************************************************************************
  * ESP32-S3 Audio Visualizer for LilyGo T-Display-S3-Long (Touchscreen)
  * 
- * Features:
- *   - Spectrum Analyzer (FFT from GPIO ADC via audio transformer)
- *   - VU Meters with multiple styles (Needle, LED Ladder)
- *   - Touch to cycle visualization modes
- *   - AK4493 DAC control via SPI (Phase 3 — stub included)
- *   - BLE Gear VR controller + USB HID mouse (Phase 4/5 — future)
+ * Architecture (Dual-Core):
+ *   Core 0 (System): BLE (NimBLE), Touch, Serial Commands, RTC, USB HID
+ *   Core 1 (App):    Audio Sampling (ISR), FFT, Sprite Rendering, QSPI Push
  * 
- * Architecture:
- *   Core 1 — Audio sampling (timer ISR), FFT, VU update, display rendering
- *   Core 0 — Touch polling + UI interaction
+ * I2C Buses:
+ *   I2C0 (Wire):  Touch controller — GPIO15 (SDA), GPIO10 (SCL)
+ *   I2C1 (Wire1): RTC DS3231      — GPIO6 (SDA),  GPIO7 (SCL)
  * 
  * Hardware:
  *   Board:  ESP32-S3-Dev (LilyGo T-Display-S3-Long)
@@ -35,6 +32,8 @@
 #include "spectrum.h"
 #include "settings.h"
 #include "serial_cmd.h"
+#include "rtc_time.h"
+#include "gearvr_controller.h"
 #include "esp_task_wdt.h"
 
 // ─── Display & Sprite ───────────────────────────────────────────────────────
@@ -45,7 +44,8 @@ TFT_eSprite sprite = TFT_eSprite(&tft);
 uint8_t ALS_ADDRESS = 0x3B;
 uint8_t read_touchpad_cmd[11] = {0xb5, 0xab, 0xa5, 0x5a, 0x0, 0x0, 0x0, 0x8};
 bool    touch_held = false;
-#define TOUCH_DEBOUNCE_MS   300   // ignore repeated touches for 300ms after a tap
+#define TOUCH_DEBOUNCE_MS   300
+#define TOUCH_I2C_TIMEOUT   50   // ms timeout for I2C touch read
 unsigned long touch_released_at = 0;
 
 // ─── Visualization Mode (volatile — written by Core 0, read by Core 1) ─────
@@ -66,19 +66,30 @@ volatile float fps = 0;
 // ─── FreeRTOS task handles ──────────────────────────────────────────────────
 TaskHandle_t audioDisplayTaskHandle = NULL;
 TaskHandle_t touchTaskHandle = NULL;
+TaskHandle_t gearVRTaskHandle = NULL;
 
-// ─── Touch Detection ────────────────────────────────────────────────────────
+// ─── BLE connect request (async — triggered from serial, runs in gearVRTask)
+volatile bool bleConnectRequested = false;
+volatile bool bleDisconnectRequested = false;
+
+// ─── Touch Detection (with I2C timeout) ────────────────────────────────────
 bool checkTouch()
 {
     uint8_t buff[20] = {0};
     Wire.beginTransmission(ALS_ADDRESS);
     Wire.write(read_touchpad_cmd, 8);
-    Wire.endTransmission();
+    if (Wire.endTransmission() != 0) return false;
+    
     Wire.requestFrom(ALS_ADDRESS, (uint8_t)8);
-    while (!Wire.available());
+    
+    // Wait with timeout instead of infinite loop
+    unsigned long start = millis();
+    while (!Wire.available()) {
+        if (millis() - start > TOUCH_I2C_TIMEOUT) return false;
+        vTaskDelay(1);
+    }
     Wire.readBytes(buff, 8);
 
-    // Must have at least 1 touch point — otherwise it's not a real touch
     uint8_t pointNum = AXS_GET_POINT_NUM(buff);
     if (pointNum == 0) return false;
 
@@ -91,7 +102,6 @@ bool checkTouch()
     int tx = map(pointX, 627, 10, 0, 640);
     int ty = map(pointY, 180, 0, 0, 180);
 
-    // Valid touch anywhere on screen → mode switch
     if (tx >= 0 && tx <= SCREEN_WIDTH && ty >= 0 && ty <= SCREEN_HEIGHT) {
         return true;
     }
@@ -100,35 +110,23 @@ bool checkTouch()
 
 void cycleMode()
 {
-    pendingModeSwitch = true;  // Safe: audioDisplayTask handles the actual switch
-}
-
-// ─── Draw FPS overlay into sprite (no push — caller pushes full frame) ──────
-static void drawFPS()
-{
-    sprite.fillRect(280, 0, 80, 14, VFD_BG);
-    sprite.setTextColor(VFD_CYAN_FULL, VFD_BG);
-    sprite.setTextDatum(TC_DATUM);
-    char fpsBuf[16];
-    snprintf(fpsBuf, sizeof(fpsBuf), "%.0f FPS", fps);
-    sprite.drawString(fpsBuf, 320, 2, 1);
+    pendingModeSwitch = true;
 }
 
 // ─── Track last mode for background redraw on switch ────────────────────────
-static VisMode lastDrawnMode = VIS_MODE_COUNT;  // Force first draw
+static VisMode lastDrawnMode = VIS_MODE_COUNT;
 
-// ─── Core 1 Task: Audio + FFT + Display ─────────────────────────────────────
+// ─── Core 1 Task: Audio + FFT + Display (heavy math + QSPI push) ───────────
 void audioDisplayTask(void *param)
 {
-    // Add this task to watchdog monitoring
     esp_task_wdt_add(NULL);
     lastFpsTime = millis();
 
     for (;;) {
-        esp_task_wdt_reset(); // Feed watchdog at start of each loop
+        esp_task_wdt_reset();
         unsigned long loopStart = millis();
         
-        // Handle mode switch from touch (safe — only this task touches display)
+        // Handle mode switch from touch
         if (pendingModeSwitch) {
             pendingModeSwitch = false;
             currentMode = (VisMode)((currentMode + 1) % VIS_MODE_COUNT);
@@ -144,7 +142,6 @@ void audioDisplayTask(void *param)
 
         // Redraw background when mode changes
         if (currentMode != lastDrawnMode) {
-            // Full screen clear to prevent artifacts from previous mode
             sprite.fillSprite(TFT_BLACK);
             lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
             
@@ -163,19 +160,16 @@ void audioDisplayTask(void *param)
 
             unsigned long frameStart = millis();
 
-            // Run FFT only for EQ mode
             if (currentMode == VIS_EQ) {
                 spectrum_compute_fft();
                 technics_vfd_draw_eq(tft, bandValuesL, NUM_BANDS);
-            } else {
+            } else if (currentMode == VIS_VU) {
                 technics_vfd_draw_vu(tft, rmsL, rmsR);
             }
 
-            // FPS overlay removed from screen (still in serial log)
-
-            // Push full frame for both modes (VU bars are 592px wide - almost full screen)
+            // Push full frame to QSPI display
             lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
-            vTaskDelay(pdMS_TO_TICKS(5));  // Give Core 0 I2C access window
+            vTaskDelay(pdMS_TO_TICKS(2));  // Yield briefly for system tasks
 
             unsigned long frameTime = millis() - frameStart;
 
@@ -186,68 +180,43 @@ void audioDisplayTask(void *param)
                 fps = (float)frameCount * 1000.0f / (float)(now - lastFpsTime);
                 frameCount = 0;
                 lastFpsTime = now;
-                
-                // Print frame timing every 3 seconds
-                static unsigned long lastPrint = 0;
-                if (now - lastPrint >= 3000) {
-                    Serial.printf("FPS: %.1f, Frame time: %lums\n", fps, frameTime);
-                    lastPrint = now;
-                }
             }
         }
         
-        // Frame rate limiting to ~30 FPS (33ms max frame time)
+        // Frame rate limiting
         unsigned long elapsed = millis() - loopStart;
         if (elapsed < 33) {
             vTaskDelay(pdMS_TO_TICKS(33 - elapsed));
         } else {
-            vTaskDelay(pdMS_TO_TICKS(1));  // Always give Core 0 some time
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
     }
 }
 
-// ─── Core 0 Task: Touch Polling ─────────────────────────────────────────────
+// ─── Core 0 Task: Touch + Auto-brightness ──────────────────────────────────
 void touchTask(void *param)
 {
-    Serial.println("Touch task started");
-    
-    // Capture I2C bus for touch controller
-    Wire.begin(TOUCH_IICSDA, TOUCH_IICSCL);
-    Wire.setClock(400000);
+    Serial.println("[Core0] Touch task started");
     
     for (;;) {
-        // Process serial commands from Web Serial UI
-        serial_cmd_poll();
-
-        // Auto-brightness from light sensor (once per second)
-        // ONLY if auto_brightness is enabled - prevents ADC noise from affecting display
+        // Auto-brightness (once per second)
         static uint32_t lastLightCheck = 0;
         if (settings.auto_brightness && (millis() - lastLightCheck > 1000)) {
-            int raw = audio_read_light_sensor();  // Use shared ADC1 handle (0-4095)
-            
-            // Apply gain and map to brightness range
+            int raw = audio_read_light_sensor();
             float scaled = raw * settings.light_gain;
             if (scaled > 4095.0f) scaled = 4095.0f;
-            
-            // Map to min/max brightness range
             int targetBri = map((int)scaled, 0, 4095, settings.brightness_min, settings.brightness_max);
-            
-            // Clamp to valid range
-            if (targetBri < settings.brightness_min) targetBri = settings.brightness_min;
-            if (targetBri > settings.brightness_max) targetBri = settings.brightness_max;
-            
-            // Set display backlight
+            targetBri = constrain(targetBri, settings.brightness_min, settings.brightness_max);
             analogWrite(TFT_BL, targetBri);
             lastLightCheck = millis();
         }
 
-        // Touch handling - simple polling without I2C conflicts
-        if (digitalRead(TOUCH_INT) == LOW) {
+        // Touch handling with I2C timeout
+        int touchInt = digitalRead(TOUCH_INT);
+        if (touchInt == LOW) {
             if (!touch_held && (millis() - touch_released_at >= TOUCH_DEBOUNCE_MS)) {
-                // Try I2C touch read with timeout
                 if (checkTouch()) {
                     cycleMode();
-                    Serial.printf("Touch: Mode %d\n", (int)currentMode);
                 }
             }
             touch_held = true;
@@ -258,8 +227,52 @@ void touchTask(void *param)
             touch_held = false;
         }
 
+        vTaskDelay(pdMS_TO_TICKS(20));  // 50 Hz touch polling
+    }
+}
+
+// ─── Core 0 Task: BLE + RTC (handles blocking BLE operations) ──────────────
+void bleRtcTask(void *param)
+{
+    Serial.println("[Core0] BLE+RTC task started");
+    
+    for (;;) {
+        // Handle async BLE connect/disconnect requests from serial
+        if (bleConnectRequested) {
+            bleConnectRequested = false;
+            Serial.println("[BLE] Connect requested...");
+            gearvr_connect();
+        }
         
-        vTaskDelay(pdMS_TO_TICKS(20));  // ~50 Hz touch + serial polling
+        if (bleDisconnectRequested) {
+            bleDisconnectRequested = false;
+            Serial.println("[BLE] Disconnect requested...");
+            gearvr_disconnect();
+        }
+        
+        // Gear VR update (battery check, reconnection, data processing)
+        if (gearvr_is_connected()) {
+            gearvr_update();
+        }
+        
+        // RTC time update (every second, uses I2C1 — no conflict with touch)
+        static uint32_t lastRtcUpdate = 0;
+        if (millis() - lastRtcUpdate > 1000) {
+            rtc_update_time();
+            lastRtcUpdate = millis();
+        }
+        
+        // Stack/heap monitoring (every 60 seconds)
+        static uint32_t lastMonitor = 0;
+        if (millis() - lastMonitor > 60000) {
+            Serial.printf("[MON] Heap: %u free, %u min | BLE+RTC stack: %u\n",
+                ESP.getFreeHeap(),
+                ESP.getMinFreeHeap(),
+                uxTaskGetStackHighWaterMark(NULL));
+            lastMonitor = millis();
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(50));  // 20 Hz BLE update rate
     }
 }
 
@@ -268,56 +281,64 @@ void setup()
 {
     Serial.begin(115200);
     Serial.println("ESP32-S3 Audio Visualizer starting...");
+    
+    // Reconfigure watchdog: exclude IDLE tasks (NimBLE uses CPU 0 heavily)
+    esp_task_wdt_deinit();
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = 30000,
+        .idle_core_mask = 0,   // Don't monitor IDLE tasks
+        .trigger_panic = true
+    };
+    esp_task_wdt_init(&wdt_config);
+    Serial.println("WDT reconfigured: IDLE excluded, 30s timeout");
 
-    // Touch screen init
+    // ── Touch screen init (I2C0) ──
     Serial.println("Initializing touch screen...");
     pinMode(TOUCH_INT, INPUT_PULLUP);
     pinMode(TOUCH_RES, OUTPUT);
     
-    Serial.printf("Touch INT pin: %d, RES pin: %d\n", TOUCH_INT, TOUCH_RES);
-    Serial.printf("Touch I2C: SDA=%d, SCL=%d\n", TOUCH_IICSDA, TOUCH_IICSCL);
+    Serial.printf("Touch: INT=%d, RES=%d, SDA=%d, SCL=%d\n", 
+                  TOUCH_INT, TOUCH_RES, TOUCH_IICSDA, TOUCH_IICSCL);
     
-    // Reset touch controller
-    Serial.println("Resetting touch controller...");
     digitalWrite(TOUCH_RES, HIGH); delay(2);
     digitalWrite(TOUCH_RES, LOW);  delay(10);
     digitalWrite(TOUCH_RES, HIGH); delay(2);
     
     Wire.begin(TOUCH_IICSDA, TOUCH_IICSCL);
-    Wire.setClock(400000);  // I2C Fast Mode — reduces touch polling bus hold time
+    Wire.setClock(400000);
     
-    // Test I2C communication
     Wire.beginTransmission(ALS_ADDRESS);
     int result = Wire.endTransmission();
-    if (result == 0) {
-        Serial.println("Touch controller I2C OK");
-    } else {
-        Serial.printf("Touch controller I2C error: %d\n", result);
-    }
-    
-    // Check initial interrupt state
-    int initState = digitalRead(TOUCH_INT);
-    Serial.printf("Initial touch interrupt state: %d (should be HIGH when not touched)\n", initState);
+    Serial.printf("Touch I2C: %s\n", result == 0 ? "OK" : "FAIL");
 
-    // Settings init (load from NVS)
+    // ── Settings (NVS) ──
     settings_init();
 
-    // Display init
-    sprite.createSprite(SCREEN_WIDTH, SCREEN_HEIGHT);  // full screen landscape sprite in PSRAM
+    // ── Display init ──
+    sprite.createSprite(SCREEN_WIDTH, SCREEN_HEIGHT);
     sprite.setSwapBytes(1);
     pinMode(TFT_BL, OUTPUT);
     analogWrite(TFT_BL, settings.brightness);
     axs15231_init();
 
-    // Audio sampling init
+    // ── Audio sampling init ──
     audio_sampling_init();
     spectrum_init();
 
-    // Serial command handler init
+    // ── Serial command handler ──
     serial_cmd_init();
 
-    
-    // Show splash
+    // ── RTC DS3231 init (I2C1 — separate bus) ──
+    Serial.println("Initializing RTC...");
+    rtc_init();
+    Serial.println("RTC init done");
+
+    // ── Gear VR BLE init (NimBLE) ──
+    Serial.println("Initializing NimBLE...");
+    gearvr_init();
+    Serial.println("NimBLE init done");
+
+    // ── Splash screen ──
     sprite.fillSprite(TFT_BLACK);
     sprite.setTextColor(TFT_CYAN, TFT_BLACK);
     sprite.setTextDatum(MC_DATUM);
@@ -327,37 +348,43 @@ void setup()
     lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
     delay(1500);
 
-    
-    // Initialize Technics VFD module (uses main sprite for rendering)
+    // ── Technics VFD module ──
     technics_vfd_init(tft);
-
-    // Start in EQ mode
     currentMode = VIS_EQ;
-    lastDrawnMode = VIS_MODE_COUNT;  // Force background draw on first frame
+    lastDrawnMode = VIS_MODE_COUNT;
 
-    // Launch FreeRTOS tasks on separate cores
-    // Touch task gets higher priority (2) to ensure I2C access
-    BaseType_t ret1 = xTaskCreatePinnedToCore(audioDisplayTask, "AudioDisplay", 32768, NULL, 1, &audioDisplayTaskHandle, 1);
-    BaseType_t ret2 = xTaskCreatePinnedToCore(touchTask, "Touch", 8192, NULL, 2, &touchTaskHandle, 0);
+    // ── Launch FreeRTOS tasks ──
+    // Core 1: Heavy rendering (FFT + sprite + QSPI push)
+    BaseType_t r1 = xTaskCreatePinnedToCore(audioDisplayTask, "AudioDisp", 32768, NULL, 1, &audioDisplayTaskHandle, 1);
     
-    if (ret1 == pdPASS) {
-        Serial.println("AudioDisplay task created successfully");
-    } else {
-        Serial.println("Failed to create AudioDisplay task");
-    }
+    // Core 0: Touch polling (lightweight, needs I2C0)
+    BaseType_t r2 = xTaskCreatePinnedToCore(touchTask, "Touch", 4096, NULL, 2, &touchTaskHandle, 0);
     
-    if (ret2 == pdPASS) {
-        Serial.println("Touch task created successfully");
-    } else {
-        Serial.printf("Failed to create Touch task, error: %d\n", ret2);
-    }
+    // Core 0: BLE + RTC (handles blocking BLE operations separately from touch)
+    BaseType_t r3 = xTaskCreatePinnedToCore(bleRtcTask, "BLE_RTC", 8192, NULL, 1, &gearVRTaskHandle, 0);
+    
+    Serial.printf("Tasks: AudioDisp=%s, Touch=%s, BLE_RTC=%s\n",
+        r1 == pdPASS ? "OK" : "FAIL",
+        r2 == pdPASS ? "OK" : "FAIL",
+        r3 == pdPASS ? "OK" : "FAIL");
 
+    Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
+    
+    // ── DAC AK4493 status (not implemented yet) ──
+    Serial.println("DAC AK4493: Not connected (stub)");
+    
     Serial.println("Ready. Touch to cycle: EQ -> VU");
 }
 
-// ─── Loop (empty to prevent loopTask watchdog timeout) ─────────────────────
+// ─── Loop: Serial command processing (runs on Core 1 loopTask) ─────────────
 void loop()
 {
-    // EMPTY. Let system feed watchdog for loopTask
-    vTaskDelay(pdMS_TO_TICKS(100));
+    static uint32_t lastLoopLog = 0;
+    if (millis() - lastLoopLog > 30000) {
+        Serial.printf("[Loop] Running on Core %d, polling serial...\n", xPortGetCoreID());
+        lastLoopLog = millis();
+    }
+    
+    serial_cmd_poll();
+    vTaskDelay(pdMS_TO_TICKS(10));  // 100 Hz serial polling
 }

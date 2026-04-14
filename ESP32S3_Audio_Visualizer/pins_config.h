@@ -89,6 +89,17 @@
 #define AK4493_PDN             -1  // connect to power-down pin if used, -1 = not connected
 #define AK4493_SPI_FREQ        1000000  // 1 MHz SPI clock for AK4493
 
+// DAC Control Pins
+#define DAC_RESET_PIN          38  // DAC hardware reset (active low)
+#define AMP_MUTE_RELAY_PIN     37  // MOSFET gate for amplifier power/mute relay
+
+// ─── RTC DS3231 (I2C) ──────────────────────────────────────────────────────
+// Uses dedicated I2C bus (I2C1) to avoid conflicts
+// For DS3231: Standard I2C address 0x68
+#define RTC_I2C_SDA            6   // GPIO6 - safe, not used by other peripherals
+#define RTC_I2C_SCL            7   // GPIO7 - safe, not used by other peripherals
+#define RTC_I2C_FREQ           400000  // 400kHz I2C clock
+
 // ─── Display Dimensions ────────────────────────────────────────────────────
 #define SCREEN_WIDTH           640
 #define SCREEN_HEIGHT          180
