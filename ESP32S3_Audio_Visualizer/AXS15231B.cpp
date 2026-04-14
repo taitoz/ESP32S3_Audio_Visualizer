@@ -216,17 +216,18 @@ void axs15231_init(void)
 
 
 
+    // Hardware reset sequence (datasheet timing)
     TFT_RES_H;
 
-    delay(130);
+    delay(10);   // Initial high state
 
     TFT_RES_L;
 
-    delay(130);
+    delay(20);   // Reset pulse (min 10ms)
 
     TFT_RES_H;
 
-    delay(300);
+    delay(150);  // Wait for controller to initialize (min 120ms)
 
 
 

@@ -314,12 +314,28 @@ void setup()
     // ── Settings (NVS) ──
     settings_init();
 
-    // ── Display init ──
+    // ── Display init (CRITICAL ORDER: init → clear → backlight) ──
+    Serial.println("Initializing display...");
+    
+    // 1. Initialize QSPI bus and AXS15231B controller
+    axs15231_init();
+    
+    // 2. Create sprite buffer and clear to black
     sprite.createSprite(SCREEN_WIDTH, SCREEN_HEIGHT);
     sprite.setSwapBytes(1);
+    sprite.fillSprite(TFT_BLACK);
+    
+    // 3. Push black frame to display
+    lcd_PushColors_rotated_90(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)sprite.getPointer());
+    delay(50);  // Wait for frame to be displayed
+    
+    // 4. NOW enable backlight (screen is already black)
     pinMode(TFT_BL, OUTPUT);
-    analogWrite(TFT_BL, settings.brightness);
-    axs15231_init();
+    digitalWrite(TFT_BL, LOW);  // Start with backlight OFF
+    delay(10);
+    analogWrite(TFT_BL, settings.brightness);  // Fade in
+    
+    Serial.println("Display ready");
 
     // ── Audio sampling init ──
     audio_sampling_init();
