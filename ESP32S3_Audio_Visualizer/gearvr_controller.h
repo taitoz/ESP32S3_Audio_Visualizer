@@ -54,5 +54,7 @@ void gearvr_disconnect();
 bool gearvr_is_connected();
 void gearvr_update();  // Called periodically to process BLE events
 
-// Mouse integration
-void gearvr_get_mouse_delta(int16_t *dx, int16_t *dy);  // For USB HID Mouse
+// USB HID Mouse integration
+void gearvr_update_mouse();  // Call this in loop() to update USB HID Mouse
+void gearvr_get_mouse_delta(int16_t *dx, int16_t *dy);  // Get relative movement
+bool gearvr_get_mouse_buttons(bool *left, bool *right, bool *middle);  // Get button states

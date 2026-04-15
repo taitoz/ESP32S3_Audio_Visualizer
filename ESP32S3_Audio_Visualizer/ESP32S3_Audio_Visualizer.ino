@@ -35,10 +35,15 @@
 #include "rtc_time.h"
 #include "gearvr_controller.h"
 #include "esp_task_wdt.h"
+#include "USB.h"
+#include "USBHIDMouse.h"
 
 // ─── Display & Sprite ───────────────────────────────────────────────────────
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite sprite = TFT_eSprite(&tft);
+
+// ─── USB HID Mouse ──────────────────────────────────────────────────────────
+USBHIDMouse Mouse;
 
 // ─── Touch ──────────────────────────────────────────────────────────────────
 uint8_t ALS_ADDRESS = 0x3B;
@@ -231,31 +236,35 @@ void touchTask(void *param)
     }
 }
 
-// ─── Core 0 Task: BLE + RTC (handles blocking BLE operations) ──────────────
+// ─── Core 0 Task: BLE + RTC (fully automatic) ──────────────────────────────
 void bleRtcTask(void *param)
 {
     Serial.println("[Core0] BLE+RTC task started");
     
+    // Initial auto-connect attempt after 2 seconds
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    Serial.println("[BLE] Starting auto-connect...");
+    gearvr_connect();
+    
     for (;;) {
-        // Handle async BLE connect/disconnect requests from serial
+        // Handle manual connect/disconnect requests from serial (optional)
         if (bleConnectRequested) {
             bleConnectRequested = false;
-            Serial.println("[BLE] Connect requested...");
+            Serial.println("[BLE] Manual connect requested...");
             gearvr_connect();
         }
         
         if (bleDisconnectRequested) {
             bleDisconnectRequested = false;
-            Serial.println("[BLE] Disconnect requested...");
+            Serial.println("[BLE] Manual disconnect requested...");
             gearvr_disconnect();
         }
         
-        // Gear VR update (battery check, reconnection, data processing)
-        if (gearvr_is_connected()) {
-            gearvr_update();
-        }
+        // ALWAYS call gearvr_update() - it handles auto-reconnect and keep-alive
+        gearvr_update();
         
         // RTC time update (every second, uses I2C1 — no conflict with touch)
+        // Non-blocking: if RTC not found, this does nothing
         static uint32_t lastRtcUpdate = 0;
         if (millis() - lastRtcUpdate > 1000) {
             rtc_update_time();
@@ -272,7 +281,7 @@ void bleRtcTask(void *param)
             lastMonitor = millis();
         }
         
-        vTaskDelay(pdMS_TO_TICKS(50));  // 20 Hz BLE update rate
+        vTaskDelay(pdMS_TO_TICKS(50));  // 20 Hz update rate
     }
 }
 
@@ -349,6 +358,25 @@ void setup()
     rtc_init();
     Serial.println("RTC init done");
 
+    // ── USB HID Mouse init (USB-OTG) ──
+    Serial.println("Initializing USB HID...");
+    
+    // Configure USB device descriptor
+    USB.VID(0xCAFE);  // Custom Vendor ID
+    USB.PID(0x0001);  // Custom Product ID
+    USB.productName("ESP32-S3 Audio Visualizer");
+    USB.manufacturerName("Taito");
+    
+    // Start USB stack (non-blocking)
+    USB.begin();
+    
+    // Initialize HID Mouse (requires USB.begin() first)
+    Mouse.begin();
+    
+    // Note: Serial output goes through USB CDC automatically on ESP32-S3
+    // USB not connected? No problem - code continues without blocking
+    Serial.println("USB HID Mouse ready (non-blocking mode)");
+    
     // ── Gear VR BLE init (NimBLE) ──
     Serial.println("Initializing NimBLE...");
     gearvr_init();
@@ -402,5 +430,9 @@ void loop()
     }
     
     serial_cmd_poll();
+    
+    // Update USB HID Mouse from Gear VR touchpad
+    gearvr_update_mouse();
+    
     vTaskDelay(pdMS_TO_TICKS(10));  // 100 Hz serial polling
 }
