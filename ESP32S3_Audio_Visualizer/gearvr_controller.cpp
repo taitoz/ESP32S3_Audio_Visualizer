@@ -48,8 +48,20 @@ static uint16_t mouseLastY = 0;
 static bool mouseLastLeft = false;
 static bool mouseLastRight = false;
 static bool mouseLastMiddle = false;
+
+// Button debounce timers (prevent false triggers)
+static uint32_t lastLeftChange = 0;
+static uint32_t lastRightChange = 0;
+static uint32_t lastMiddleChange = 0;
+#define BUTTON_DEBOUNCE_MS 50  // 50ms debounce
+
+// Exponential smoothing filter
 static float filteredDX = 0.0f;
 static float filteredDY = 0.0f;
+
+// Float accumulators for sub-pixel precision (eliminates grid effect)
+static float accumulatorX = 0.0f;
+static float accumulatorY = 0.0f;
 
 // Helper function to reset mouse state
 static void resetMouseState()
@@ -61,6 +73,8 @@ static void resetMouseState()
     mouseLastMiddle = false;
     filteredDX = 0.0f;
     filteredDY = 0.0f;
+    accumulatorX = 0.0f;
+    accumulatorY = 0.0f;
 }
 
 // Notification callback for main data stream
@@ -71,31 +85,43 @@ static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, si
         return;
     }
     
-    // === CORRECT 10-BIT PARSING ALGORITHM ===
+    // === CORRECT 10-BIT PARSING ALGORITHM (from reference implementation) ===
+    // Reference: https://github.com/rdady/gear-vr-controller-windows
     
-    // Touch Active flag (byte 54, bit 4)
-    bool touchActive = (pData[54] & 0x10) > 0;
+    // Touch Active flag (byte 58, bit 3 = touchpad clicked)
+    bool touchActive = (pData[58] & 0x08) > 0;
     
-    // X coordinate (10-bit): 4 bits from byte 55 + 6 bits from byte 56
-    uint16_t rawX = ((pData[55] & 0x0F) << 6) | (pData[56] >> 2);
+    // X coordinate (10-bit): 4 bits from byte 54 + 6 bits from byte 55
+    // axisX = (((byte_values[54] & 0xF) << 6) + ((byte_values[55] & 0xFC) >> 2)) & 0x3FF;
+    uint16_t rawX = (((pData[54] & 0x0F) << 6) | ((pData[55] & 0xFC) >> 2)) & 0x3FF;
     
-    // Y coordinate (10-bit): 2 bits from byte 56 + 8 bits from byte 57
-    uint16_t rawY = ((pData[56] & 0x03) << 8) | pData[57];
+    // Y coordinate (10-bit): 2 bits from byte 55 + 8 bits from byte 56
+    // axisY = (((byte_values[55] & 0x3) << 8) + ((byte_values[56] & 0xFF) >> 0)) & 0x3FF;
+    uint16_t rawY = (((pData[55] & 0x03) << 8) | pData[56]) & 0x3FF;
     
-    // Trigger (byte 58, bit 0)
-    bool trigger = (pData[58] & 0x01) > 0;
-    
-    // Buttons from byte 54
-    bool homeBtn = (pData[54] & 0x01) > 0;
-    bool backBtn = (pData[54] & 0x02) > 0;
-    bool volDown = (pData[54] & 0x04) > 0;
-    bool volUp = (pData[54] & 0x08) > 0;
+    // Buttons from byte 58 (reference implementation)
+    // triggerButton    = ((byte_values[58] &  1) ==  1);
+    // homeButton       = ((byte_values[58] &  2) ==  2);
+    // backButton       = ((byte_values[58] &  4) ==  4);
+    // touchpadButton   = ((byte_values[58] &  8) ==  8);
+    // volumeUpButton   = ((byte_values[58] & 16) == 16);
+    // volumeDownButton = ((byte_values[58] & 32) == 32);
+    bool trigger = (pData[58] & 0x01) > 0;  // Bit 0
+    bool homeBtn = (pData[58] & 0x02) > 0;  // Bit 1
+    bool backBtn = (pData[58] & 0x04) > 0;  // Bit 2
+    bool touchpadBtn = (pData[58] & 0x08) > 0;  // Bit 3
+    bool volUp = (pData[58] & 0x10) > 0;    // Bit 4
+    bool volDown = (pData[58] & 0x20) > 0;  // Bit 5
     
     // Battery (byte 59)
     uint8_t battery = pData[59];
     
     // === UPDATE GLOBAL STATE ===
-    gearVR.touchActive = touchActive;
+    // Touch is active when coordinates are non-zero (finger on touchpad)
+    // touchActive flag (bit 3) is for CLICKING, not touching!
+    bool fingerOnPad = (rawX > 0 || rawY > 0);
+    
+    gearVR.touchActive = fingerOnPad;  // Use coordinate-based detection
     gearVR.triggerPressed = trigger;
     gearVR.homePressed = homeBtn;
     gearVR.backPressed = backBtn;
@@ -103,11 +129,9 @@ static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, si
     gearVR.volumeUpPressed = volUp;
     gearVR.batteryLevel = battery;
     
-    // Update coordinates (keep last value if not touching)
-    if (touchActive) {
-        gearVR.touchX = rawX;
-        gearVR.touchY = rawY;
-    }
+    // Always update coordinates
+    gearVR.touchX = rawX;
+    gearVR.touchY = rawY;
     
     // === OUTPUT ONLY ON CHANGES ===
     static bool lastTouchActive = false;
@@ -115,21 +139,21 @@ static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, si
     static uint16_t lastX = 0;
     static uint16_t lastY = 0;
     
-    bool changed = (touchActive != lastTouchActive) || 
+    bool changed = (fingerOnPad != lastTouchActive) || 
                    (trigger != lastTrigger) ||
-                   (touchActive && (rawX != lastX || rawY != lastY));
+                   (fingerOnPad && (rawX != lastX || rawY != lastY));
     
     if (changed) {
-        if (touchActive) {
-            Serial.printf("[OK] TOUCH: X=%d Y=%d | TRIG=%d | Buttons: H=%d B=%d V+=%d V-=%d\n", 
-                          rawX, rawY, trigger, homeBtn, backBtn, volUp, volDown);
+        if (fingerOnPad) {
+            Serial.printf("[OK] TOUCH: X=%d Y=%d | TRIG=%d | Click=%d | Buttons: H=%d B=%d V+=%d V-=%d\n", 
+                          rawX, rawY, trigger, touchpadBtn, homeBtn, backBtn, volUp, volDown);
         } else if (trigger) {
             Serial.printf("[OK] TRIGGER ONLY | Last X=%d Y=%d\n", gearVR.touchX, gearVR.touchY);
         } else if (lastTouchActive) {
             Serial.printf("[OK] TOUCH RELEASED | Last X=%d Y=%d\n", gearVR.touchX, gearVR.touchY);
         }
         
-        lastTouchActive = touchActive;
+        lastTouchActive = fingerOnPad;
         lastTrigger = trigger;
         lastX = rawX;
         lastY = rawY;
@@ -324,7 +348,7 @@ void gearvr_disconnect()
 
 bool gearvr_is_connected()
 {
-    return gearVR.connected && pClient && pClient->isConnected();Исправь инициализацию USB. Убедись, что используется USB.begin() вместе с Mouse.begin(). Весь отладочный вывод должен идти через Serial, который в режиме S3 OTG привязан к нативному USB. Добавь проверку: если USB не подключен, код не должен блокироваться, чтобы BLE продолжал работать
+    return gearVR.connected && pClient && pClient->isConnected();
 }
 
 void gearvr_update()
@@ -383,10 +407,15 @@ void gearvr_update()
  ******************************************************************************/
 
 // Configuration
-#define MOUSE_DEADZONE 2        // Ignore movements < 2 units (reduce drift)
-#define MOUSE_MAX_STEP 50       // Max pixels per update (prevent cursor "flying")
-#define MOUSE_SENSITIVITY 1.2   // Sensitivity multiplier
-#define MOUSE_SMOOTHING 0.3f    // Alpha coefficient (0.1=very smooth, 1.0=no smoothing)
+#define MOUSE_DEADZONE 3        // Ignore movements < 3 units (reduce micro-jitter)
+#define MOUSE_MAX_STEP 60       // Max pixels per update (allow faster movement)
+#define MOUSE_SENSITIVITY 3.0   // Base sensitivity multiplier (doubled from 1.5)
+#define MOUSE_SMOOTHING 0.4f    // Alpha coefficient (higher = more responsive)
+#define MOUSE_ACCEL_ENABLED true   // Enable acceleration curve
+#define MOUSE_ACCEL_THRESHOLD 12   // Start acceleration above this speed (higher = less accel)
+#define MOUSE_ACCEL_FACTOR 1.2     // Acceleration multiplier (reduced from 1.4)
+#define MOUSE_INVERT_X false    // Don't invert X axis
+#define MOUSE_INVERT_Y false    // Don't invert Y axis (up-down was swapped)
 
 void gearvr_update_mouse()
 {
@@ -398,7 +427,7 @@ void gearvr_update_mouse()
     // Note: USB HID Mouse operations are non-blocking on ESP32-S3
     // If USB is not connected, Mouse.move() and Mouse.press/release() are no-ops
     
-    // === MOUSE MOVEMENT (Relative with Exponential Smoothing) ===
+    // === MOUSE MOVEMENT (Float Accumulator for Sub-Pixel Precision) ===
     
     if (gearVR.touchActive) {
         // Calculate raw delta
@@ -419,71 +448,124 @@ void gearvr_update_mouse()
         
         // Skip if no movement
         if (rawDx == 0 && rawDy == 0) {
-            return;
+            // Continue to button handling
+            goto handle_buttons;
         }
         
-        // Apply sensitivity
-        float sensitiveDx = rawDx * MOUSE_SENSITIVITY;
-        float sensitiveDy = rawDy * MOUSE_SENSITIVITY;
+        // Apply axis inversion if configured
+        if (MOUSE_INVERT_X) rawDx = -rawDx;
+        if (MOUSE_INVERT_Y) rawDy = -rawDy;
+        
+        // Apply base sensitivity (float for sub-pixel precision)
+        float sensitiveDx = (float)rawDx * MOUSE_SENSITIVITY;
+        float sensitiveDy = (float)rawDy * MOUSE_SENSITIVITY;
+        
+        // Apply acceleration curve for faster movements
+        if (MOUSE_ACCEL_ENABLED) {
+            float speed = sqrt(sensitiveDx * sensitiveDx + sensitiveDy * sensitiveDy);
+            if (speed > MOUSE_ACCEL_THRESHOLD) {
+                // Acceleration factor increases with speed
+                float accelMultiplier = 1.0f + ((speed - MOUSE_ACCEL_THRESHOLD) / MOUSE_ACCEL_THRESHOLD) * (MOUSE_ACCEL_FACTOR - 1.0f);
+                sensitiveDx *= accelMultiplier;
+                sensitiveDy *= accelMultiplier;
+            }
+        }
         
         // Apply exponential moving average filter (smooth movement)
         // Formula: filtered = (new * alpha) + (old * (1 - alpha))
         filteredDX = (sensitiveDx * MOUSE_SMOOTHING) + (filteredDX * (1.0f - MOUSE_SMOOTHING));
         filteredDY = (sensitiveDy * MOUSE_SMOOTHING) + (filteredDY * (1.0f - MOUSE_SMOOTHING));
         
-        // Convert to integer for Mouse.move()
-        int16_t finalDx = (int16_t)filteredDX;
-        int16_t finalDy = (int16_t)filteredDY;
+        // Add to float accumulator (preserves fractional part)
+        accumulatorX += filteredDX;
+        accumulatorY += filteredDY;
+        
+        // Extract integer part for Mouse.move()
+        int16_t finalDx = (int16_t)accumulatorX;
+        int16_t finalDy = (int16_t)accumulatorY;
+        
+        // Keep fractional part in accumulator
+        accumulatorX -= (float)finalDx;
+        accumulatorY -= (float)finalDy;
         
         // Clamp to max step (prevent cursor flying on sudden movements)
-        if (finalDx > MOUSE_MAX_STEP) finalDx = MOUSE_MAX_STEP;
-        if (finalDx < -MOUSE_MAX_STEP) finalDx = -MOUSE_MAX_STEP;
-        if (finalDy > MOUSE_MAX_STEP) finalDy = MOUSE_MAX_STEP;
-        if (finalDy < -MOUSE_MAX_STEP) finalDy = -MOUSE_MAX_STEP;
+        if (finalDx > MOUSE_MAX_STEP) {
+            finalDx = MOUSE_MAX_STEP;
+            accumulatorX = 0.0f;  // Reset accumulator on clamp
+        }
+        if (finalDx < -MOUSE_MAX_STEP) {
+            finalDx = -MOUSE_MAX_STEP;
+            accumulatorX = 0.0f;
+        }
+        if (finalDy > MOUSE_MAX_STEP) {
+            finalDy = MOUSE_MAX_STEP;
+            accumulatorY = 0.0f;
+        }
+        if (finalDy < -MOUSE_MAX_STEP) {
+            finalDy = -MOUSE_MAX_STEP;
+            accumulatorY = 0.0f;
+        }
         
         // Send movement if non-zero
         if (finalDx != 0 || finalDy != 0) {
             Mouse.move(finalDx, finalDy);
         }
     } else {
-        // Touch released - reset tracking and filter
+        // Touch released - reset tracking and filters
         mouseLastX = gearVR.touchX;
         mouseLastY = gearVR.touchY;
         filteredDX = 0.0f;
         filteredDY = 0.0f;
+        accumulatorX = 0.0f;
+        accumulatorY = 0.0f;
     }
     
-    // === MOUSE BUTTONS ===
+handle_buttons:
+    
+    // === MOUSE BUTTONS (with Debounce) ===
     bool leftBtn = gearVR.triggerPressed;      // Trigger -> Left Click
     bool rightBtn = gearVR.backPressed;        // Back -> Right Click
     bool middleBtn = gearVR.homePressed;       // Home -> Middle Click
     
-    // Update buttons only on state change
+    uint32_t now = millis();
+    
+    // Left button (Trigger) with debounce
     if (leftBtn != mouseLastLeft) {
-        if (leftBtn) {
-            Mouse.press(MOUSE_LEFT);
-        } else {
-            Mouse.release(MOUSE_LEFT);
+        if (now - lastLeftChange >= BUTTON_DEBOUNCE_MS) {
+            if (leftBtn) {
+                Mouse.press(MOUSE_LEFT);
+            } else {
+                Mouse.release(MOUSE_LEFT);
+            }
+            mouseLastLeft = leftBtn;
+            lastLeftChange = now;
         }
-        mouseLastLeft = leftBtn;
     }
     
+    // Right button (Back) with debounce
     if (rightBtn != mouseLastRight) {
-        if (rightBtn) {
-            Mouse.press(MOUSE_RIGHT);
-        } else {
-            Mouse.release(MOUSE_RIGHT);
+        if (now - lastRightChange >= BUTTON_DEBOUNCE_MS) {
+            if (rightBtn) {
+                Mouse.press(MOUSE_RIGHT);
+            } else {
+                Mouse.release(MOUSE_RIGHT);
+            }
+            mouseLastRight = rightBtn;
+            lastRightChange = now;
         }
-        mouseLastRight = rightBtn;
     }
     
+    // Middle button (Home) with debounce
     if (middleBtn != mouseLastMiddle) {
-        if (middleBtn) {
-            Mouse.press(MOUSE_MIDDLE);
-        } else {
-            Mouse.release(MOUSE_MIDDLE);
+        if (now - lastMiddleChange >= BUTTON_DEBOUNCE_MS) {
+            if (middleBtn) {
+                Mouse.press(MOUSE_MIDDLE);
+            } else {
+                Mouse.release(MOUSE_MIDDLE);
+            }
+            mouseLastMiddle = middleBtn;
+            lastMiddleChange = now;
         }
-        mouseLastMiddle = middleBtn;
     }
 }
 
