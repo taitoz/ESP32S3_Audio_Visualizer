@@ -402,13 +402,14 @@ void gearvr_update()
  * USB HID Mouse Integration
  ******************************************************************************/
 
-// Professional Trackpad Configuration (Ballistics)
+// Professional Trackpad Configuration (Power Curve for FHD)
 #define MOUSE_DEADZONE 3        // Ignore movements < 3 units (ADC noise filter)
-#define MOUSE_BASE_SENS 0.5f    // Base sensitivity for slow movements (increased from 0.15)
-#define MOUSE_ACCEL_FACTOR 0.01f   // Velocity-based acceleration factor (increased from 0.005)
+#define MOUSE_BASE_SENS 0.2f    // Base sensitivity for slow/precise movements
+#define MOUSE_ACCEL_FACTOR 0.01f   // Power curve acceleration factor
 #define MOUSE_MAX_STEP 150      // Max pixels per update (allow fast swipes)
+#define MOUSE_WRAP_THRESHOLD 500   // Detect false coordinate jumps (wrap-around fix)
 #define MOUSE_INVERT_X false    // Don't invert X axis
-#define MOUSE_INVERT_Y false    // Don't invert Y axis (was inverted incorrectly)
+#define MOUSE_INVERT_Y false    // Don't invert Y axis
 
 void gearvr_update_mouse()
 {
@@ -420,7 +421,7 @@ void gearvr_update_mouse()
     // Note: USB HID Mouse operations are non-blocking on ESP32-S3
     // If USB is not connected, Mouse.move() and Mouse.press/release() are no-ops
     
-    // === PROFESSIONAL TRACKPAD LOGIC (Ballistics + Anti-Jitter) ===
+    // === PROFESSIONAL TRACKPAD LOGIC (Ballistics + Anti-Jitter + Wrap-around Fix) ===
     
     if (gearVR.touchActive) {
         // First touch frame - just record position, don't move cursor (prevent jump)
@@ -431,50 +432,48 @@ void gearvr_update_mouse()
             goto handle_buttons;  // Skip movement on first touch
         }
         
-        // Calculate raw delta from last position
-        int16_t dx = (int16_t)(gearVR.touchX - mouseLastX);
-        int16_t dy = (int16_t)(gearVR.touchY - mouseLastY);
+        // Calculate raw delta using int32_t to prevent overflow
+        int32_t dx = (int32_t)gearVR.touchX - (int32_t)mouseLastX;
+        int32_t dy = (int32_t)gearVR.touchY - (int32_t)mouseLastY;
         
         // Update last position for next frame
         mouseLastX = gearVR.touchX;
         mouseLastY = gearVR.touchY;
         
-        // Apply deadzone (filter ADC noise)
-        if (abs(dx) < MOUSE_DEADZONE) dx = 0;
-        if (abs(dy) < MOUSE_DEADZONE) dy = 0;
-        
-        // Skip if no movement
-        if (dx == 0 && dy == 0) {
+        // Fix wrap-around / false jumps (coordinate glitches at boundaries)
+        // If delta is too large, it's a false jump - ignore it
+        if (abs(dx) > 500 || abs(dy) > 500) {
+            // False jump detected - reset and skip
             goto handle_buttons;
+        }
+        
+        // Apply deadzone (filter ADC noise) - hard threshold
+        if (abs(dx) < MOUSE_DEADZONE && abs(dy) < MOUSE_DEADZONE) {
+            goto handle_buttons;  // No movement
         }
         
         // Apply axis inversion
         if (MOUSE_INVERT_X) dx = -dx;
         if (MOUSE_INVERT_Y) dy = -dy;
         
-        // Calculate velocity for ballistics (dynamic acceleration)
-        float velocity = sqrt((float)(dx * dx + dy * dy));
+        // Calculate speed for power curve acceleration
+        float speed = sqrt((float)(dx * dx + dy * dy));
         
-        // Ballistics: sensitivity increases with velocity
-        // factor = baseSens + (velocity * accelFactor)
-        // Slow movement: ~0.15x, Fast movement: up to 1.0x+
-        float factor = MOUSE_BASE_SENS + (velocity * MOUSE_ACCEL_FACTOR);
+        // Power curve: force = baseSens + (speed * accelFactor)
+        // This provides quadratic-like acceleration for FHD monitors
+        float force = MOUSE_BASE_SENS + (speed * MOUSE_ACCEL_FACTOR);
         
-        // Apply sensitivity with ballistics
-        float moveX = (float)dx * factor;
-        float moveY = (float)dy * factor;
-        
-        // Add to remainder (accumulate fractional part)
-        remainderX += moveX;
-        remainderY += moveY;
+        // Apply force to delta with remainder accumulation
+        float moveX = (float)dx * force + remainderX;
+        float moveY = (float)dy * force + remainderY;
         
         // Extract integer part for Mouse.move()
-        int16_t finalDx = (int16_t)remainderX;
-        int16_t finalDy = (int16_t)remainderY;
+        int16_t finalDx = (int16_t)moveX;
+        int16_t finalDy = (int16_t)moveY;
         
         // Keep fractional part in remainder (anti-jitter)
-        remainderX -= (float)finalDx;
-        remainderY -= (float)finalDy;
+        remainderX = moveX - (float)finalDx;
+        remainderY = moveY - (float)finalDy;
         
         // Clamp to max step (prevent cursor flying)
         if (finalDx > MOUSE_MAX_STEP) {
