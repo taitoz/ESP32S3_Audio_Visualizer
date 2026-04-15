@@ -48,6 +48,7 @@ static uint16_t mouseLastY = 0;
 static bool mouseLastLeft = false;
 static bool mouseLastRight = false;
 static bool mouseLastMiddle = false;
+static bool wasTouched = false;  // Track if touch was active in previous frame
 
 // Button debounce timers (prevent false triggers)
 static uint32_t lastLeftChange = 0;
@@ -55,13 +56,9 @@ static uint32_t lastRightChange = 0;
 static uint32_t lastMiddleChange = 0;
 #define BUTTON_DEBOUNCE_MS 50  // 50ms debounce
 
-// Exponential smoothing filter
-static float filteredDX = 0.0f;
-static float filteredDY = 0.0f;
-
-// Float accumulators for sub-pixel precision (eliminates grid effect)
-static float accumulatorX = 0.0f;
-static float accumulatorY = 0.0f;
+// Float remainder for sub-pixel precision (anti-jitter)
+static float remainderX = 0.0f;
+static float remainderY = 0.0f;
 
 // Helper function to reset mouse state
 static void resetMouseState()
@@ -71,10 +68,9 @@ static void resetMouseState()
     mouseLastLeft = false;
     mouseLastRight = false;
     mouseLastMiddle = false;
-    filteredDX = 0.0f;
-    filteredDY = 0.0f;
-    accumulatorX = 0.0f;
-    accumulatorY = 0.0f;
+    wasTouched = false;
+    remainderX = 0.0f;
+    remainderY = 0.0f;
 }
 
 // Notification callback for main data stream
@@ -406,16 +402,13 @@ void gearvr_update()
  * USB HID Mouse Integration
  ******************************************************************************/
 
-// Configuration
-#define MOUSE_DEADZONE 3        // Ignore movements < 3 units (reduce micro-jitter)
-#define MOUSE_MAX_STEP 60       // Max pixels per update (allow faster movement)
-#define MOUSE_SENSITIVITY 3.0   // Base sensitivity multiplier (doubled from 1.5)
-#define MOUSE_SMOOTHING 0.4f    // Alpha coefficient (higher = more responsive)
-#define MOUSE_ACCEL_ENABLED true   // Enable acceleration curve
-#define MOUSE_ACCEL_THRESHOLD 12   // Start acceleration above this speed (higher = less accel)
-#define MOUSE_ACCEL_FACTOR 1.2     // Acceleration multiplier (reduced from 1.4)
+// Professional Trackpad Configuration (Ballistics)
+#define MOUSE_DEADZONE 3        // Ignore movements < 3 units (ADC noise filter)
+#define MOUSE_BASE_SENS 0.5f    // Base sensitivity for slow movements (increased from 0.15)
+#define MOUSE_ACCEL_FACTOR 0.01f   // Velocity-based acceleration factor (increased from 0.005)
+#define MOUSE_MAX_STEP 150      // Max pixels per update (allow fast swipes)
 #define MOUSE_INVERT_X false    // Don't invert X axis
-#define MOUSE_INVERT_Y false    // Don't invert Y axis (up-down was swapped)
+#define MOUSE_INVERT_Y false    // Don't invert Y axis (was inverted incorrectly)
 
 void gearvr_update_mouse()
 {
@@ -427,97 +420,89 @@ void gearvr_update_mouse()
     // Note: USB HID Mouse operations are non-blocking on ESP32-S3
     // If USB is not connected, Mouse.move() and Mouse.press/release() are no-ops
     
-    // === MOUSE MOVEMENT (Float Accumulator for Sub-Pixel Precision) ===
+    // === PROFESSIONAL TRACKPAD LOGIC (Ballistics + Anti-Jitter) ===
     
     if (gearVR.touchActive) {
-        // Calculate raw delta
-        int16_t rawDx = (int16_t)(gearVR.touchX - mouseLastX);
-        int16_t rawDy = (int16_t)(gearVR.touchY - mouseLastY);
+        // First touch frame - just record position, don't move cursor (prevent jump)
+        if (!wasTouched) {
+            mouseLastX = gearVR.touchX;
+            mouseLastY = gearVR.touchY;
+            wasTouched = true;
+            goto handle_buttons;  // Skip movement on first touch
+        }
         
-        // Update last position immediately (for next delta calculation)
+        // Calculate raw delta from last position
+        int16_t dx = (int16_t)(gearVR.touchX - mouseLastX);
+        int16_t dy = (int16_t)(gearVR.touchY - mouseLastY);
+        
+        // Update last position for next frame
         mouseLastX = gearVR.touchX;
         mouseLastY = gearVR.touchY;
         
-        // Apply deadzone filter (eliminate drift when finger is stationary)
-        if (abs(rawDx) < MOUSE_DEADZONE) {
-            rawDx = 0;
-        }
-        if (abs(rawDy) < MOUSE_DEADZONE) {
-            rawDy = 0;
-        }
+        // Apply deadzone (filter ADC noise)
+        if (abs(dx) < MOUSE_DEADZONE) dx = 0;
+        if (abs(dy) < MOUSE_DEADZONE) dy = 0;
         
         // Skip if no movement
-        if (rawDx == 0 && rawDy == 0) {
-            // Continue to button handling
+        if (dx == 0 && dy == 0) {
             goto handle_buttons;
         }
         
-        // Apply axis inversion if configured
-        if (MOUSE_INVERT_X) rawDx = -rawDx;
-        if (MOUSE_INVERT_Y) rawDy = -rawDy;
+        // Apply axis inversion
+        if (MOUSE_INVERT_X) dx = -dx;
+        if (MOUSE_INVERT_Y) dy = -dy;
         
-        // Apply base sensitivity (float for sub-pixel precision)
-        float sensitiveDx = (float)rawDx * MOUSE_SENSITIVITY;
-        float sensitiveDy = (float)rawDy * MOUSE_SENSITIVITY;
+        // Calculate velocity for ballistics (dynamic acceleration)
+        float velocity = sqrt((float)(dx * dx + dy * dy));
         
-        // Apply acceleration curve for faster movements
-        if (MOUSE_ACCEL_ENABLED) {
-            float speed = sqrt(sensitiveDx * sensitiveDx + sensitiveDy * sensitiveDy);
-            if (speed > MOUSE_ACCEL_THRESHOLD) {
-                // Acceleration factor increases with speed
-                float accelMultiplier = 1.0f + ((speed - MOUSE_ACCEL_THRESHOLD) / MOUSE_ACCEL_THRESHOLD) * (MOUSE_ACCEL_FACTOR - 1.0f);
-                sensitiveDx *= accelMultiplier;
-                sensitiveDy *= accelMultiplier;
-            }
-        }
+        // Ballistics: sensitivity increases with velocity
+        // factor = baseSens + (velocity * accelFactor)
+        // Slow movement: ~0.15x, Fast movement: up to 1.0x+
+        float factor = MOUSE_BASE_SENS + (velocity * MOUSE_ACCEL_FACTOR);
         
-        // Apply exponential moving average filter (smooth movement)
-        // Formula: filtered = (new * alpha) + (old * (1 - alpha))
-        filteredDX = (sensitiveDx * MOUSE_SMOOTHING) + (filteredDX * (1.0f - MOUSE_SMOOTHING));
-        filteredDY = (sensitiveDy * MOUSE_SMOOTHING) + (filteredDY * (1.0f - MOUSE_SMOOTHING));
+        // Apply sensitivity with ballistics
+        float moveX = (float)dx * factor;
+        float moveY = (float)dy * factor;
         
-        // Add to float accumulator (preserves fractional part)
-        accumulatorX += filteredDX;
-        accumulatorY += filteredDY;
+        // Add to remainder (accumulate fractional part)
+        remainderX += moveX;
+        remainderY += moveY;
         
         // Extract integer part for Mouse.move()
-        int16_t finalDx = (int16_t)accumulatorX;
-        int16_t finalDy = (int16_t)accumulatorY;
+        int16_t finalDx = (int16_t)remainderX;
+        int16_t finalDy = (int16_t)remainderY;
         
-        // Keep fractional part in accumulator
-        accumulatorX -= (float)finalDx;
-        accumulatorY -= (float)finalDy;
+        // Keep fractional part in remainder (anti-jitter)
+        remainderX -= (float)finalDx;
+        remainderY -= (float)finalDy;
         
-        // Clamp to max step (prevent cursor flying on sudden movements)
+        // Clamp to max step (prevent cursor flying)
         if (finalDx > MOUSE_MAX_STEP) {
             finalDx = MOUSE_MAX_STEP;
-            accumulatorX = 0.0f;  // Reset accumulator on clamp
+            remainderX = 0.0f;
         }
         if (finalDx < -MOUSE_MAX_STEP) {
             finalDx = -MOUSE_MAX_STEP;
-            accumulatorX = 0.0f;
+            remainderX = 0.0f;
         }
         if (finalDy > MOUSE_MAX_STEP) {
             finalDy = MOUSE_MAX_STEP;
-            accumulatorY = 0.0f;
+            remainderY = 0.0f;
         }
         if (finalDy < -MOUSE_MAX_STEP) {
             finalDy = -MOUSE_MAX_STEP;
-            accumulatorY = 0.0f;
+            remainderY = 0.0f;
         }
         
-        // Send movement if non-zero
+        // Send movement to USB HID
         if (finalDx != 0 || finalDy != 0) {
             Mouse.move(finalDx, finalDy);
         }
     } else {
-        // Touch released - reset tracking and filters
-        mouseLastX = gearVR.touchX;
-        mouseLastY = gearVR.touchY;
-        filteredDX = 0.0f;
-        filteredDY = 0.0f;
-        accumulatorX = 0.0f;
-        accumulatorY = 0.0f;
+        // Touch released - reset state
+        wasTouched = false;
+        remainderX = 0.0f;
+        remainderY = 0.0f;
     }
     
 handle_buttons:
