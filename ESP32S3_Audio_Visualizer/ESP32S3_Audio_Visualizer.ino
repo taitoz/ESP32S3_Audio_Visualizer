@@ -37,6 +37,7 @@
 #include "esp_task_wdt.h"
 #include "USB.h"
 #include "USBHIDMouse.h"
+#include "USBHIDConsumerControl.h"
 
 // ─── Display & Sprite ───────────────────────────────────────────────────────
 TFT_eSPI tft = TFT_eSPI();
@@ -44,6 +45,7 @@ TFT_eSprite sprite = TFT_eSprite(&tft);
 
 // ─── USB HID Mouse ──────────────────────────────────────────────────────────
 USBHIDMouse Mouse;
+USBHIDConsumerControl ConsumerControl;  // Media keys (Volume, AC_BACK)
 
 // ─── Touch ──────────────────────────────────────────────────────────────────
 uint8_t ALS_ADDRESS = 0x3B;
@@ -358,24 +360,25 @@ void setup()
     rtc_init();
     Serial.println("RTC init done");
 
-    // ── USB HID Mouse init (USB-OTG) ──
+    // ── USB HID Mouse + Consumer Control init (USB-OTG composite) ──
     Serial.println("Initializing USB HID...");
     
-    // Configure USB device descriptor
+    // Configure USB device descriptor (must be set BEFORE any begin() call)
     USB.VID(0xCAFE);  // Custom Vendor ID
     USB.PID(0x0001);  // Custom Product ID
     USB.productName("ESP32-S3 Audio Visualizer");
     USB.manufacturerName("Taito");
     
-    // Start USB stack (non-blocking)
+    // CRITICAL: HID interfaces must be registered BEFORE USB.begin().
+    // Otherwise the USB descriptor is built without HID endpoints and
+    // adding them post-enumeration breaks CDC (Serial) on host side.
+    Mouse.begin();
+    ConsumerControl.begin();
+    
+    // Start USB stack with full composite descriptor (CDC + HID Mouse + HID Consumer)
     USB.begin();
     
-    // Initialize HID Mouse (requires USB.begin() first)
-    Mouse.begin();
-    
-    // Note: Serial output goes through USB CDC automatically on ESP32-S3
-    // USB not connected? No problem - code continues without blocking
-    Serial.println("USB HID Mouse ready (non-blocking mode)");
+    Serial.println("USB HID composite ready (CDC + Mouse + Consumer)");
     
     // ── Gear VR BLE init (NimBLE) ──
     Serial.println("Initializing NimBLE...");

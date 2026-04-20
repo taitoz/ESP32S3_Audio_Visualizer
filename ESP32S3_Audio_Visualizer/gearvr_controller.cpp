@@ -2,10 +2,18 @@
 #include <NimBLEDevice.h>
 #include "USB.h"
 #include "USBHIDMouse.h"
+#include "USBHIDConsumerControl.h"
 #include <string>
+#include <math.h>
 
-// USB HID Mouse instance (declared in main .ino)
+// USB HID instances (declared in main .ino)
 extern USBHIDMouse Mouse;
+extern USBHIDConsumerControl ConsumerControl;
+
+// HID Consumer Control usage codes (USB HID Usage Table, page 0x0C)
+#define HID_CC_VOLUME_INCREMENT  0x00E9
+#define HID_CC_VOLUME_DECREMENT  0x00EA
+#define HID_CC_AC_BACK           0x0224
 
 /*******************************************************************************
  * Gear VR Controller - BLE Implementation
@@ -34,46 +42,70 @@ static NimBLERemoteCharacteristic* pDataChar = nullptr;
 static NimBLERemoteCharacteristic* pCommandChar = nullptr;
 static NimBLERemoteCharacteristic* pBatteryChar = nullptr;
 
-// Previous touchpad position for delta calculation
-static uint16_t lastTouchX = 0;
-static uint16_t lastTouchY = 0;
-
 // Auto-reconnect state
 static uint32_t lastConnectAttempt = 0;
 static uint32_t lastKeepAlive = 0;
 
-// USB HID Mouse state tracking
-static uint16_t mouseLastX = 0;
-static uint16_t mouseLastY = 0;
-static bool mouseLastLeft = false;
-static bool mouseLastRight = false;
-static bool mouseLastMiddle = false;
-static bool wasTouched = false;  // Track if touch was active in previous frame
+// === AIR MOUSE STATE ===
+// Cursor is driven by gyro while finger touches the pad (touch-to-activate).
+// Touchpad vertical delta drives the scroll wheel.
 
-// Button debounce timers (prevent false triggers)
-static uint32_t lastLeftChange = 0;
-static uint32_t lastRightChange = 0;
-static uint32_t lastMiddleChange = 0;
-#define BUTTON_DEBOUNCE_MS 50  // 50ms debounce
+// Gyro EMA (Exponential Moving Average) filtered values
+static float gyroFilteredX = 0.0f;
+static float gyroFilteredY = 0.0f;
+static float gyroFilteredZ = 0.0f;
 
-// Float remainder for sub-pixel precision (anti-jitter)
+// === PER-TOUCH RECALIBRATION ===
+// On every finger-down edge we recompute the gyro "zero" reference so the cursor
+// always starts relative to the current orientation (no accumulated drift). During
+// calibration we FREEZE the cursor and average N samples for bias offsets.
+#define GYRO_CALIB_SAMPLES  8       // ~80 ms at 100 Hz — near-instant to user
+static int32_t gyroCalibSum[3] = {0, 0, 0};
+static uint16_t gyroCalibCount = 0;
+static bool     gyroCalibrating = false;    // true while recalibration window is open
+static float    gyroBiasX = 0.0f;           // current zero reference, updated per touch
+static float    gyroBiasY = 0.0f;
+static float    gyroBiasZ = 0.0f;
+
+// Touch state
+static bool wasTouched = false;             // Touch active in previous frame
+static uint16_t scrollLastY = 0;            // Previous touchY for scroll delta
+static bool scrollInit = false;             // Need to re-seed scrollLastY on new touch
+
+// Zoned click state (latched at click press edge, NOT touch begin)
+static uint16_t clickZoneX = 0;             // touchX captured at rising edge of touchpadClick
+static bool lastTouchpadClickEdge = false;  // previous touchpad click state (for edge detect)
+
+// Sub-pixel accumulators (anti-jitter for cursor and scroll)
 static float remainderX = 0.0f;
 static float remainderY = 0.0f;
+static float scrollRemainder = 0.0f;
 
-// Forward declaration (handleMouse is called in notifyCallback before its definition)
-static void handleMouse(int32_t x, int32_t y, bool touched);
+// Button state tracking + debounce
+static bool mouseLastLeft = false;
+static bool mouseLastRight = false;
+static bool lastVolUp = false;
+static bool lastVolDown = false;
+static bool lastBack = false;
+static bool lastTouchpadClicked = false;
+static uint32_t lastLeftChange = 0;
+static uint32_t lastRightChange = 0;
+#define BUTTON_DEBOUNCE_MS 50
 
-// Helper function to reset mouse state
+// Forward declarations
+static void handleAirMouse(bool touched);
+static void handleScroll(uint16_t touchX, uint16_t touchY, bool touched);
+
+// Release all active mouse buttons (called on disconnect to prevent stuck state)
 static void resetMouseState()
 {
-    mouseLastX = 0;
-    mouseLastY = 0;
-    mouseLastLeft = false;
-    mouseLastRight = false;
-    mouseLastMiddle = false;
+    if (mouseLastLeft)  { Mouse.release(MOUSE_LEFT);  mouseLastLeft = false; }
+    if (mouseLastRight) { Mouse.release(MOUSE_RIGHT); mouseLastRight = false; }
     wasTouched = false;
+    scrollInit = false;
     remainderX = 0.0f;
     remainderY = 0.0f;
+    scrollRemainder = 0.0f;
 }
 
 // Notification callback for main data stream
@@ -123,6 +155,7 @@ static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, si
     gearVR.triggerPressed = trigger;
     gearVR.homePressed = homeBtn;
     gearVR.backPressed = backBtn;
+    gearVR.touchpadClicked = touchpadBtn;  // Bit 3 — physical click on pad
     gearVR.volumeDownPressed = volDown;
     gearVR.volumeUpPressed = volUp;
     gearVR.batteryLevel = battery;
@@ -142,24 +175,79 @@ static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, si
     }
     
     // Parse IMU data (bytes 4-27, little-endian int16)
-    gearVR.accelX = (int16_t)((pData[5] << 8) | pData[4]);
-    gearVR.accelY = (int16_t)((pData[7] << 8) | pData[6]);
-    gearVR.accelZ = (int16_t)((pData[9] << 8) | pData[8]);
-    
-    gearVR.gyroX = (int16_t)((pData[11] << 8) | pData[10]);
-    gearVR.gyroY = (int16_t)((pData[13] << 8) | pData[12]);
-    gearVR.gyroZ = (int16_t)((pData[15] << 8) | pData[14]);
-    
+    int16_t aX = (int16_t)((pData[5] << 8) | pData[4]);
+    int16_t aY = (int16_t)((pData[7] << 8) | pData[6]);
+    int16_t aZ = (int16_t)((pData[9] << 8) | pData[8]);
+    int16_t gX = (int16_t)((pData[11] << 8) | pData[10]);
+    int16_t gY = (int16_t)((pData[13] << 8) | pData[12]);
+    int16_t gZ = (int16_t)((pData[15] << 8) | pData[14]);
+    gearVR.accelX = aX; gearVR.accelY = aY; gearVR.accelZ = aZ;
+    gearVR.gyroX  = gX; gearVR.gyroY  = gY; gearVR.gyroZ  = gZ;
     gearVR.magX = (int16_t)((pData[17] << 8) | pData[16]);
     gearVR.magY = (int16_t)((pData[19] << 8) | pData[18]);
     gearVR.magZ = (int16_t)((pData[21] << 8) | pData[20]);
     
     gearVR.lastUpdateMs = now;
     
-    // === IMMEDIATE MOUSE UPDATE (zero latency) ===
-    // Process mouse movement directly in BLE callback for minimal latency.
-    // This avoids waiting for the next loop() poll cycle.
-    handleMouse((int32_t)rawX, (int32_t)rawY, fingerOnPad);
+    // === PER-TOUCH GYRO RECALIBRATION ===
+    // On every finger-down edge, open a short calibration window: average next N
+    // gyro samples and use that as the "zero" reference. Cursor is frozen during
+    // this window so user sees no drift before movement starts.
+    if (fingerOnPad && !wasTouched) {
+        // Rising edge of touch → start recalibration
+        gyroCalibrating = true;
+        gyroCalibCount = 0;
+        gyroCalibSum[0] = gyroCalibSum[1] = gyroCalibSum[2] = 0;
+        // Pre-seed EMA to zero so filter doesn't carry history from previous touch
+        gyroFilteredX = gyroFilteredY = gyroFilteredZ = 0.0f;
+    }
+    
+    if (gyroCalibrating) {
+        // Abort calibration if finger was released mid-window (user lifted early)
+        if (!fingerOnPad) {
+            gyroCalibrating = false;
+            wasTouched = false;
+            handleScroll(rawX, rawY, fingerOnPad);  // reset scroll state
+            return;
+        }
+        
+        gyroCalibSum[0] += gX;
+        gyroCalibSum[1] += gY;
+        gyroCalibSum[2] += gZ;
+        gyroCalibCount++;
+        if (gyroCalibCount >= GYRO_CALIB_SAMPLES) {
+            gyroBiasX = (float)gyroCalibSum[0] / (float)gyroCalibCount;
+            gyroBiasY = (float)gyroCalibSum[1] / (float)gyroCalibCount;
+            gyroBiasZ = (float)gyroCalibSum[2] / (float)gyroCalibCount;
+            gyroCalibrating = false;
+        }
+        // Cursor frozen during calibration window — but still update wasTouched
+        // so we don't retrigger calibration on next frame.
+        wasTouched = fingerOnPad;
+        // Still drive scroll logic (seeding scrollLastY etc.) — it's independent
+        handleScroll(rawX, rawY, fingerOnPad);
+        return;
+    }
+    
+    // === EMA FILTER on gyro (alpha = 0.15) — remove tremor ===
+    const float EMA_ALPHA = 0.15f;
+    gyroFilteredX = EMA_ALPHA * ((float)gX - gyroBiasX) + (1.0f - EMA_ALPHA) * gyroFilteredX;
+    gyroFilteredY = EMA_ALPHA * ((float)gY - gyroBiasY) + (1.0f - EMA_ALPHA) * gyroFilteredY;
+    gyroFilteredZ = EMA_ALPHA * ((float)gZ - gyroBiasZ) + (1.0f - EMA_ALPHA) * gyroFilteredZ;
+    
+    // === ZONED CLICK: latch zone at CLICK press edge (not touch begin) ===
+    // Finger may land anywhere, but the click bit goes high only when user actually
+    // presses. Capture touchX at that moment — that's the intended zone.
+    if (touchpadBtn && !lastTouchpadClickEdge) {
+        clickZoneX = rawX;  // snapshot X at rising edge of physical click
+    }
+    lastTouchpadClickEdge = touchpadBtn;
+    
+    // === IMMEDIATE AIR MOUSE UPDATE (zero latency) ===
+    // Cursor: gyro-driven, gated by touch (only move when finger on pad)
+    // Scroll: touchpad vertical delta
+    handleAirMouse(fingerOnPad);
+    handleScroll(rawX, rawY, fingerOnPad);
 }
 
 // Client callbacks
@@ -394,21 +482,37 @@ void gearvr_update()
 }
 
 /*******************************************************************************
- * USB HID Mouse Integration
+ * USB HID Integration — Air Mouse + Touchpad Scroll + Consumer Control
+ *
+ * Input mapping:
+ *   • Cursor       : Gyro (rotation) — active ONLY while finger touches pad
+ *   • Scroll wheel : Touchpad vertical delta (ΔY while touched)
+ *   • Touchpad click (left half, X<=512)  → Mouse LEFT click
+ *   • Touchpad click (right half, X>512)  → Mouse RIGHT click
+ *   • Trigger                             → Mouse LEFT click (dup for convenience)
+ *   • Back button                         → Consumer AC_BACK (browser back)
+ *   • Volume +                            → Consumer Volume Increment
+ *   • Volume −                            → Consumer Volume Decrement
  ******************************************************************************/
 
-// Professional Trackpad Configuration (Power Curve for FHD)
-#define MOUSE_DEADZONE 3              // Ignore raw deltas < 3 units (ADC noise)
-#define MOUSE_BASE_SENS 0.4f          // Base sensitivity (linear term) - boosted
-#define MOUSE_ACCEL_FACTOR 0.025f     // Quadratic acceleration coefficient - boosted
-#define MOUSE_WRAP_THRESHOLD 500      // Detect false coordinate jumps
-#define MOUSE_HID_MAX 127             // int8_t max for Mouse.move() per call
-#define MOUSE_INVERT_X false          // Don't invert X axis
-#define MOUSE_INVERT_Y false          // Invert Y (Gear VR Y decreases upward)
+// Air Mouse configuration
+#define AIR_GYRO_DEADZONE    30.0f     // Ignore filtered gyro values below this (tremor) - raised
+#define AIR_GYRO_SENS_X      0.004f    // Horizontal gyro → mouse X scale - lowered ~3x
+#define AIR_GYRO_SENS_Y      0.004f    // Vertical gyro → mouse Y scale - lowered ~3x
+#define AIR_GYRO_ACCEL       0.00002f  // Non-linear acceleration on fast motion - softer
+#define AIR_MOUSE_INVERT_X   true      // Inverted (controller orientation vs screen)
+#define AIR_MOUSE_INVERT_Y   true      // Inverted
+#define MOUSE_HID_MAX        127       // int8_t max per Mouse.move() call
 
-// Send mouse movement with int8_t overflow protection.
-// Mouse.move() accepts int8_t (-127..127). If delta exceeds range,
-// we split it into multiple calls to prevent wrap-around (backward flick).
+// Scroll configuration
+#define SCROLL_SENS          0.05f     // Touchpad Y delta → scroll units
+#define SCROLL_DEADZONE      3         // Ignore sub-pixel touchpad noise
+#define SCROLL_WRAP_THRESHOLD 500      // Reject coordinate glitches
+
+// Touchpad click zoning
+#define TOUCH_ZONE_MIDDLE    512       // X boundary: <=512 = left zone, >512 = right zone
+
+// Send mouse movement with int8_t overflow protection (split large deltas).
 static void sendMouseMove(int32_t dx, int32_t dy)
 {
     while (dx != 0 || dy != 0) {
@@ -441,175 +545,197 @@ static void sendMouseMove(int32_t dx, int32_t dy)
     }
 }
 
-// Clean handleMouse() function - processes touch state and moves cursor.
-// Parameters: absolute touch coords (0-1024), touched flag.
-static void handleMouse(int32_t x, int32_t y, bool touched)
+// === AIR MOUSE: Gyro-driven cursor, gated by touch activation ===
+// Called from BLE notifyCallback after calibration + EMA filtering.
+// Cursor moves ONLY while finger touches the pad (Touch Sensing).
+static void handleAirMouse(bool touched)
 {
-    // === TOUCH STATE MACHINE ===
     if (!touched) {
-        // Finger released - reset state
+        // Finger released — freeze cursor, drop sub-pixel remainders
         wasTouched = false;
         remainderX = 0.0f;
         remainderY = 0.0f;
         return;
     }
     
-    // First touch frame - initialize lastX/Y, do NOT move cursor (prevents jump)
+    // First touch frame — arm the state, don't move this tick
     if (!wasTouched) {
-        mouseLastX = x;
-        mouseLastY = y;
         wasTouched = true;
+        remainderX = 0.0f;
+        remainderY = 0.0f;
         return;
     }
     
-    // === CALCULATE RAW DELTA (int32_t to prevent overflow) ===
-    int32_t dx = x - (int32_t)mouseLastX;
-    int32_t dy = y - (int32_t)mouseLastY;
+    // Gyro axes mapping (Gear VR controller orientation):
+    //   gyroZ → mouse X (yaw = horizontal pointing)
+    //   gyroX → mouse Y (pitch = vertical pointing)
+    // (gyroY is roll — not used for cursor movement)
+    float rawX = gyroFilteredZ;
+    float rawY = gyroFilteredX;
     
-    // === WRAP-AROUND PROTECTION ===
-    // Reject impossibly large jumps (coordinate glitches at boundaries)
-    if (abs(dx) > MOUSE_WRAP_THRESHOLD || abs(dy) > MOUSE_WRAP_THRESHOLD) {
-        mouseLastX = x;
-        mouseLastY = y;
-        return;
+    if (AIR_MOUSE_INVERT_X) rawX = -rawX;
+    if (AIR_MOUSE_INVERT_Y) rawY = -rawY;
+    
+    // Deadzone per-axis (filter tremor that survived EMA)
+    if (fabsf(rawX) < AIR_GYRO_DEADZONE) rawX = 0.0f;
+    if (fabsf(rawY) < AIR_GYRO_DEADZONE) rawY = 0.0f;
+    
+    if (rawX == 0.0f && rawY == 0.0f) {
+        return;  // Still — don't flush remainder (keeps sub-pixel precision)
     }
     
-    // === DEADZONE (noise filter) ===
-    // Ignore if BOTH axes are below threshold
-    if (abs(dx) < MOUSE_DEADZONE && abs(dy) < MOUSE_DEADZONE) {
-        return;  // Don't update lastX/Y - allow accumulation on next frame
-    }
+    // Non-linear acceleration — quadratic boost on fast sweeps
+    float magnitude = sqrtf(rawX * rawX + rawY * rawY);
+    float accelBoost = 1.0f + magnitude * AIR_GYRO_ACCEL * magnitude;
     
-    // === Y-AXIS INVERSION ===
-    if (MOUSE_INVERT_X) dx = -dx;
-    if (MOUSE_INVERT_Y) dy = -dy;
-    
-    // === DYNAMIC BALLISTICS (Combined Vector-Length Scale) ===
-    // Use a SINGLE scale based on total vector length for both axes.
-    // This eliminates the "diamond" effect where diagonals felt slower.
-    // Formula: scale = base + |velocity| * accel
-    //          move = delta * scale   (quadratic because scale grows with |delta|)
-    float velocity = sqrtf((float)(dx * dx + dy * dy));
-    float combinedScale = MOUSE_BASE_SENS + (velocity * MOUSE_ACCEL_FACTOR);
-    
-    float moveX = (float)dx * combinedScale;
-    float moveY = (float)dy * combinedScale;
-    
-    // === FLOATING POINT ACCUMULATOR (anti-jitter, sub-pixel precision) ===
-    // remainderX/Y are static globals - persist between calls
-    moveX += remainderX;
-    moveY += remainderY;
+    float moveX = rawX * AIR_GYRO_SENS_X * accelBoost + remainderX;
+    float moveY = rawY * AIR_GYRO_SENS_Y * accelBoost + remainderY;
     
     int32_t finalDx = (int32_t)moveX;
     int32_t finalDy = (int32_t)moveY;
     
-    // Keep fractional part for next frame
+    // Sub-pixel remainder (persist between calls for smoothness)
     remainderX = moveX - (float)finalDx;
     remainderY = moveY - (float)finalDy;
     
-    // === SEND TO USB HID (with int8_t overflow protection via loop) ===
-    // Send FIRST — before any Serial I/O — to minimize latency.
     if (finalDx != 0 || finalDy != 0) {
         sendMouseMove(finalDx, finalDy);
     }
-    
-    // === THROTTLED DEBUG OUTPUT (once per 500ms, AFTER mouse move) ===
-    // Serial over USB-OTG is slow; keep it out of the hot path.
-    static uint32_t lastMouseDebug = 0;
-    uint32_t nowMs = millis();
-    if (nowMs - lastMouseDebug >= 500) {
-        lastMouseDebug = nowMs;
-        Serial.printf("[MOUSE] raw=(%ld,%ld) vel=%.1f scale=%.2f final=(%ld,%ld) rem=(%.2f,%.2f)\n",
-                      (long)dx, (long)dy, velocity, combinedScale,
-                      (long)finalDx, (long)finalDy, remainderX, remainderY);
-    }
-    
-    // === UPDATE LAST POSITION (only at the end) ===
-    mouseLastX = x;
-    mouseLastY = y;
 }
 
-void gearvr_update_mouse()
+// === TOUCHPAD SCROLL: vertical touchpad delta drives scroll wheel ===
+// Only scrolls while finger is on the pad. Uses int32_t delta to prevent
+// wrap-around on fast swipes, and a float accumulator for smooth sub-unit scroll.
+static void handleScroll(uint16_t touchX, uint16_t touchY, bool touched)
 {
-    // Skip if Gear VR not connected
-    if (!gearVR.connected) {
+    (void)touchX;  // not used in scroll, but kept for signature symmetry
+    
+    if (!touched) {
+        scrollInit = false;
+        scrollRemainder = 0.0f;
         return;
     }
     
-    // NOTE: Mouse MOVEMENT is handled directly in notifyCallback() for zero latency.
-    // This function only handles button state changes (polled from loop()).
+    // First touch frame after finger landed — seed the reference Y, don't scroll yet
+    if (!scrollInit) {
+        scrollLastY = touchY;
+        scrollInit = true;
+        return;
+    }
+    
+    int32_t dy = (int32_t)touchY - (int32_t)scrollLastY;
+    scrollLastY = touchY;
+    
+    // Reject coordinate glitches (wrap-around)
+    if (abs(dy) > SCROLL_WRAP_THRESHOLD) return;
+    
+    // Deadzone
+    if (abs(dy) < SCROLL_DEADZONE) return;
+    
+    // Accumulate with remainder so fractional scroll counts aren't lost
+    // Note: natural scroll direction — finger moves DOWN on pad → content scrolls DOWN
+    // (invert sign to match standard mouse wheel: down = negative wheel)
+    float scrollF = -(float)dy * SCROLL_SENS + scrollRemainder;
+    int32_t scrollUnits = (int32_t)scrollF;
+    scrollRemainder = scrollF - (float)scrollUnits;
+    
+    if (scrollUnits != 0) {
+        // Clamp scroll to int8_t range per HID report
+        if (scrollUnits > 127)  scrollUnits = 127;
+        if (scrollUnits < -127) scrollUnits = -127;
+        Mouse.move(0, 0, (int8_t)scrollUnits);
+    }
+}
 
-    // === MOUSE BUTTONS (with Debounce) ===
-    bool leftBtn = gearVR.triggerPressed;      // Trigger -> Left Click
-    bool rightBtn = gearVR.backPressed;        // Back -> Right Click
-    bool middleBtn = gearVR.homePressed;       // Home -> Middle Click
+// === BUTTON + CONSUMER CONTROL HANDLER ===
+// Polled from loop() at ~100 Hz. Maps:
+//   • Trigger           → Mouse LEFT
+//   • Touchpad click    → Mouse LEFT (if X<=512) or RIGHT (if X>512) — resolved at press edge
+//   • Back              → Consumer AC_BACK (one-shot on press edge)
+//   • Volume +/-        → Consumer Volume Inc/Dec (one-shot on press edge)
+void gearvr_update_mouse()
+{
+    if (!gearVR.connected) return;
     
     uint32_t now = millis();
     
-    // Left button (Trigger) with debounce
-    if (leftBtn != mouseLastLeft) {
+    bool trigger = gearVR.triggerPressed;
+    bool tpClick = gearVR.touchpadClicked;
+    bool backBtn = gearVR.backPressed;
+    bool volUp   = gearVR.volumeUpPressed;
+    bool volDn   = gearVR.volumeDownPressed;
+    
+    // --- Compute desired LEFT/RIGHT state from trigger + zoned touchpad click ---
+    // Trigger is always LEFT. Touchpad click resolves to LEFT or RIGHT depending
+    // on touchX captured at the RISING EDGE of the physical click (clickZoneX).
+    bool tpLeft  = tpClick && (clickZoneX <= TOUCH_ZONE_MIDDLE);
+    bool tpRight = tpClick && (clickZoneX >  TOUCH_ZONE_MIDDLE);
+    bool wantLeft  = trigger || tpLeft;
+    bool wantRight = tpRight;
+    
+    // Debug on click edge (one-shot, not in hot path)
+    if (tpClick && !lastTouchpadClicked) {
+        Serial.printf("[CLICK] touchpad@X=%u zone=%s\n",
+                      clickZoneX, (clickZoneX <= TOUCH_ZONE_MIDDLE) ? "LEFT" : "RIGHT");
+    }
+    
+    // --- LEFT click (debounced) ---
+    if (wantLeft != mouseLastLeft) {
         if (now - lastLeftChange >= BUTTON_DEBOUNCE_MS) {
-            if (leftBtn) {
-                Mouse.press(MOUSE_LEFT);
-            } else {
-                Mouse.release(MOUSE_LEFT);
-            }
-            mouseLastLeft = leftBtn;
+            if (wantLeft) Mouse.press(MOUSE_LEFT); else Mouse.release(MOUSE_LEFT);
+            mouseLastLeft = wantLeft;
             lastLeftChange = now;
         }
     }
     
-    // Right button (Back) with debounce
-    if (rightBtn != mouseLastRight) {
+    // --- RIGHT click (debounced) ---
+    if (wantRight != mouseLastRight) {
         if (now - lastRightChange >= BUTTON_DEBOUNCE_MS) {
-            if (rightBtn) {
-                Mouse.press(MOUSE_RIGHT);
-            } else {
-                Mouse.release(MOUSE_RIGHT);
-            }
-            mouseLastRight = rightBtn;
+            if (wantRight) Mouse.press(MOUSE_RIGHT); else Mouse.release(MOUSE_RIGHT);
+            mouseLastRight = wantRight;
             lastRightChange = now;
         }
     }
     
-    // Middle button (Home) with debounce
-    if (middleBtn != mouseLastMiddle) {
-        if (now - lastMiddleChange >= BUTTON_DEBOUNCE_MS) {
-            if (middleBtn) {
-                Mouse.press(MOUSE_MIDDLE);
-            } else {
-                Mouse.release(MOUSE_MIDDLE);
-            }
-            mouseLastMiddle = middleBtn;
-            lastMiddleChange = now;
-        }
-    }
-}
-
-void gearvr_get_mouse_delta(int16_t *dx, int16_t *dy)
-{
-    if (!gearVR.connected || !gearVR.touchActive) {
-        *dx = 0;
-        *dy = 0;
-        return;
+    // --- Consumer Control: edge-triggered one-shot press/release ---
+    // Back button → AC_BACK (browser "back")
+    if (backBtn != lastBack) {
+        if (backBtn) ConsumerControl.press(HID_CC_AC_BACK);
+        else        ConsumerControl.release();
+        lastBack = backBtn;
     }
     
-    // Calculate delta from last position
-    *dx = (int16_t)(gearVR.touchX - mouseLastX);
-    *dy = (int16_t)(gearVR.touchY - mouseLastY);
+    // Volume + / - (press and release mirror controller state)
+    if (volUp != lastVolUp) {
+        if (volUp) ConsumerControl.press(HID_CC_VOLUME_INCREMENT);
+        else       ConsumerControl.release();
+        lastVolUp = volUp;
+    }
+    if (volDn != lastVolDown) {
+        if (volDn) ConsumerControl.press(HID_CC_VOLUME_DECREMENT);
+        else       ConsumerControl.release();
+        lastVolDown = volDn;
+    }
+    
+    // Track touchpad click edge (for debug only; actual mapping above)
+    lastTouchpadClicked = tpClick;
+}
+
+// === Legacy getters (kept for API compatibility — no longer used internally) ===
+void gearvr_get_mouse_delta(int16_t *dx, int16_t *dy)
+{
+    *dx = 0;
+    *dy = 0;
 }
 
 bool gearvr_get_mouse_buttons(bool *left, bool *right, bool *middle)
 {
     if (!gearVR.connected) {
-        *left = false;
-        *right = false;
-        *middle = false;
+        *left = *right = *middle = false;
         return false;
     }
-    
-    *left = gearVR.triggerPressed;
-    *right = gearVR.backPressed;
-    *middle = gearVR.homePressed;
+    *left   = mouseLastLeft;
+    *right  = mouseLastRight;
+    *middle = false;  // No middle button in air mouse mode
     return true;
 }
