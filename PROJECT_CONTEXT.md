@@ -1,14 +1,28 @@
 # ESP32-S3 Audio Visualizer - Project Context
 
-**Version**: 1.0-alpha  
-**Platform**: LilyGo T-Display-S3-Long  
-**Status**: Core audio visualization complete, stable release
+**Version**: 1.2-alpha (Gear VR BLE + USB HID Mouse integrated)
+**Platform**: LilyGo T-Display-S3-Long
+**Status**: Audio visualization + Gear VR BLE controller + USB HID Mouse emulation working
+
+---
+
+## ⚠️ IMPORTANT FOR AI ASSISTANTS — READ FIRST
+
+**DO NOT attempt to compile or build this project.** This is an Arduino sketch targeting a physical ESP32-S3 board; it requires:
+- Arduino IDE 2.x or arduino-cli with ESP32 core 3.x
+- Specific libraries: `NimBLE-Arduino`, `TFT_eSPI` (patched for AXS15231B), `arduinoFFT`, `ArduinoJson`, TinyUSB (`USB.h`, `USBHIDMouse.h`)
+- Board: `ESP32S3 Dev Module` with settings: USB CDC On Boot = **Enabled**, USB Mode = **HW CDC+JTAG**, PSRAM = **OPI 8MB**, Flash Size = **16MB**, Partition Scheme = **16M Flash (3MB APP/9.9MB FATFS)**
+- Physical hardware (LilyGo T-Display-S3-Long + Gear VR controller) to test behavior
+
+The user flashes the firmware via Arduino IDE and tests interactively. **Your job is to make source code changes only.** Do not run `arduino-cli compile`, `pio run`, `make`, or similar — they will either fail silently due to environment gaps or produce misleading errors unrelated to the actual code.
+
+**Verification workflow**: user loads firmware → observes Serial monitor / mouse behavior → reports back. Iterate on code via focused edits, not rebuilds.
 
 ---
 
 ## 1. Project Overview
 
-**Goal**: Real-time audio spectrum analyzer and VU meter with capacitive touch control on ESP32-S3 platform.
+**Goal**: Real-time audio spectrum analyzer and VU meter with capacitive touch control on ESP32-S3, PLUS Samsung Gear VR controller (BLE) acting as USB HID Mouse over the board's native USB.
 
 **Implemented Features**:
 1. ✅ Technics EQ (SH-GE70 style) — 10-band FFT spectrum with cyan-to-red gradient
@@ -16,8 +30,10 @@
 3. ✅ Capacitive touch control for mode switching (EQ ↔ VU)
 4. ✅ Auto-brightness via ambient light sensor (GPIO4)
 5. ✅ Web Serial UI for real-time settings control
-6. ✅ FreeRTOS dual-core architecture (Core 0: touch/serial, Core 1: audio/display)
+6. ✅ FreeRTOS dual-core architecture (Core 0: touch/serial/BLE/HID, Core 1: audio/display)
 7. ✅ PSRAM-optimized display rendering with full-frame 640×180 push
+8. ✅ **Samsung Gear VR controller via BLE (NimBLE client)** — 10-bit touchpad + 6 buttons + IMU
+9. ✅ **USB HID Mouse emulation** — Gear VR touchpad drives host cursor (FHD-optimized ballistics)
 
 **Core Principle**: The 640x180 landscape display and capacitive touchscreen provide the primary user interface. Audio visualization responds in real-time to stereo input.
 
@@ -181,10 +197,10 @@ RIGHT:  Audio Transformer R secondary → 100nF cap → GPIO4 (ADC1_CH3)
 
 ## 3. Software Architecture
 
-### 3.1 Current Module Structure (Phase 1 + Phase 5 + Phase 6)
+### 3.1 Current Module Structure (Phases 1, 3, 4, 5, 6 DONE)
 
 ```
-ESP32S3_Audio_Visualizer.ino     Main sketch — FreeRTOS task creation, setup
+ESP32S3_Audio_Visualizer.ino     Main sketch — FreeRTOS task creation, USB/BLE setup, loop
   ├── pins_config.h              All hardware pin definitions and constants
   ├── AXS15231B.cpp/.h           QSPI display driver (PSRAM rotation buffer)
   ├── audio_sampling.cpp/.h      Timer-driven stereo ADC, double-buffer, RMS/peak
@@ -193,16 +209,17 @@ ESP32S3_Audio_Visualizer.ino     Main sketch — FreeRTOS task creation, setup
   ├── serial_cmd.cpp/.h          JSON command handler over USB CDC Serial
   ├── settings.cpp/.h            NVS persistence for all configuration
   ├── light_sensor.cpp/.h        Ambient light ADC → auto backlight PWM
+  ├── gearvr_controller.cpp/.h   NimBLE client for Samsung Gear VR + USB HID Mouse integration
 settings.html                    Standalone Web Serial UI (opened locally in browser)
 .gitignore                       Build artifacts and IDE files
 ```
 
-### 3.2 Target Module Structure (All Phases — Future Additions)
+**Note**: USB HID logic is NOT in a separate `usb_hid.cpp` — it lives inside `gearvr_controller.cpp` because the movement logic is tightly coupled to the BLE notification callback for zero-latency cursor updates.
+
+### 3.2 Target Module Structure (Remaining Future Additions)
 
 ```
-  ├── ak4493.cpp/.h              AK4493 SPI driver (register read/write, volume, filter)
-  ├── ble_gearvr.cpp/.h          BLE client — scan, connect, parse Gear VR packets
-  └── usb_hid.cpp/.h             USB HID mouse + keyboard output
+  └── ak4493.cpp/.h              AK4493 SPI driver (register read/write, volume, filter)  [Phase 2]
 ```
 
 ### 3.3 Memory Budget
@@ -286,69 +303,86 @@ settings.html                    Standalone Web Serial UI (opened locally in bro
 
 ---
 
-### Phase 3: BLE Gear VR Controller Client
+### Phase 3: BLE Gear VR Controller Client [DONE]
 
-**Files to create**: `ble_gearvr.cpp`, `ble_gearvr.h`
+**Files**: `gearvr_controller.cpp`, `gearvr_controller.h`
 
-**Library**: NimBLE-Arduino (lighter than default ESP32 BLE, saves ~100KB RAM)
+**Library**: NimBLE-Arduino (saves ~100 KB RAM vs default ESP-IDF BLE).
 
-**Implementation steps**:
-1. Initialize NimBLE as BLE Central (client)
-2. Scan for device advertising service UUID `4f63756c-7573-2054-6563-686e6f6c6f67`
-3. Connect and discover characteristics
-4. Subscribe to notification characteristic (controller data stream)
-5. Parse the ~60-byte data packets:
+**Actual Implementation** (reference: https://github.com/rdady/gear-vr-controller-windows):
 
-**Gear VR Controller Packet Format** (reverse-engineered):
+- **Hardcoded MAC pairing** (not scanning): `#define GEARVR_MAC_ADDRESS "2C:BA:BA:2A:D4:05"` — user-configurable per controller
+- **Service UUID**: `4f63756c-7573-2054-6872-65656d6f7465` ("Oculus Three Remote")
+- **Data characteristic**: `c8c51726-81bc-483b-a052-f7a14ea3d281` (subscribe to notifications)
+- **Command characteristic**: `c8c51726-81bc-483b-a052-f7a14ea3d282` (write keep-alive)
+- **Connection parameters**: `pClient->updateConnParams(6, 12, 0, 400)` → interval 7.5–15 ms → **66–133 Hz packet rate** (critical for smooth mouse)
 
-| Offset | Size | Data |
-|--------|------|------|
-| 0 | 2 | Timestamp (16-bit) |
-| 2 | 2 | Temperature (raw) |
-| 4 | 6 | Accelerometer X, Y, Z (16-bit signed each) |
-| 10 | 6 | Gyroscope X, Y, Z (16-bit signed each) |
-| 16 | 6 | Magnetometer X, Y, Z (16-bit signed each) |
-| 54 | 2 | Touchpad X (0-315), Y (0-315) |
-| 56 | 1 | Buttons bitfield |
-| 57 | 1 | Trigger analog value |
+**Activation sequence** (in `gearvr_connect()`):
+1. Connect to MAC
+2. Discover services (force refresh: `getServices(true)`)
+3. Read battery service (`0x180F`) to wake controller
+4. Subscribe to data characteristic notifications
+5. Write command `0x01 0x00 0x00` (no response), then `0x01 0x00` (with response)
+6. Periodic keep-alive `0x01 0x00 0x00` every 1 s in `gearvr_update()`
 
-**Button Bitfield** (byte 56):
-- Bit 0: Trigger (click)
-- Bit 1: Home
-- Bit 2: Back
-- Bit 3: Volume Up
-- Bit 4: Volume Down
-- Bit 5: Touchpad click
+**60-byte BLE packet parsing** (in `notifyCallback`):
 
-**Notes**:
-- The controller enters sleep after ~30s of inactivity; need to handle reconnection
-- The BLE protocol may require a specific write to a characteristic to enable sensor streaming
-- Test with `nRF Connect` app first to verify UUIDs and packet format for your specific controller revision
+| Field | Bytes | Formula |
+|-------|-------|---------|
+| Touchpad X (10-bit, 0–1023) | 54, 55 | `((pData[54] & 0x0F) << 6) \| ((pData[55] & 0xFC) >> 2)` |
+| Touchpad Y (10-bit, 0–1023) | 55, 56 | `((pData[55] & 0x03) << 8) \| pData[56]` |
+| Accel X/Y/Z (int16 LE) | 4–9 | little-endian `(hi << 8) \| lo` |
+| Gyro X/Y/Z (int16 LE) | 10–15 | same |
+| Mag X/Y/Z (int16 LE) | 16–21 | same |
+| Buttons bitfield | 58 | bit0=Trigger, bit1=Home, bit2=Back, bit3=TouchpadClick, bit4=VolUp, bit5=VolDown |
+| Battery % | 59 | raw uint8 |
+
+**Touch detection**: `fingerOnPad = (rawX > 0 \|\| rawY > 0)` — coordinate-based, NOT `bit 3` of byte 58 (that's a *click*, not a *touch*).
+
+**Auto-reconnect**: `gearvr_update()` checks `pClient->isConnected()` every cycle. On disconnect or 10 s data timeout, calls `gearvr_connect()` after 15 s cooldown. All mouse buttons are released on disconnect to prevent stuck state.
 
 ---
 
-### Phase 4: USB HID Mouse/Keyboard Output
+### Phase 4: USB HID Mouse Output [DONE]
 
-**Files to create**: `usb_hid.cpp`, `usb_hid.h`
+**Files**: `gearvr_controller.cpp` (integrated — no separate `usb_hid.cpp`)
 
-**Libraries**: `USB.h`, `USBHIDMouse.h`, `USBHIDKeyboard.h` (built into ESP32 Arduino Core 3.x)
+**Library**: `USB.h` + `USBHIDMouse.h` (TinyUSB built into ESP32 Arduino Core 3.x).
 
-**Implementation steps**:
-1. Initialize USB HID composite device (Mouse + Keyboard)
-2. Map Gear VR controller inputs to HID:
+**USB descriptor** (in `ESP32S3_Audio_Visualizer.ino` `setup()`):
+```cpp
+USB.VID(0xCAFE);
+USB.PID(0x0001);
+USB.productName("ESP32-S3 Audio Visualizer");
+USB.manufacturerName("Taito");
+USB.begin();
+Mouse.begin();
+```
 
-| Controller Input | HID Output | Notes |
-|-----------------|------------|-------|
-| Touchpad swipe | Mouse move (X/Y) | Scale touchpad delta to mouse sensitivity |
-| Trigger click | Left mouse button | |
-| Back button | Right mouse button | |
-| Touchpad click | Middle mouse button | |
-| Volume Up/Down | Mouse scroll wheel | |
-| Home button | Keyboard media key (or configurable) | |
-| Gyro X/Y | Mouse move (alternative mode) | Air-mouse mode |
+**Composite device**: USB CDC (Serial debug) + HID Mouse — simultaneous via TinyUSB. `Mouse.move/press/release` are no-ops if host isn't connected (non-blocking — BLE keeps working even without USB host).
 
-3. Add configurable sensitivity/mapping via settings UI
-4. Support mode toggle: Touchpad mode vs Gyro air-mouse mode
+**Button mapping**:
+
+| Gear VR | Mouse |
+|---------|-------|
+| Trigger | LEFT click |
+| Back | RIGHT click |
+| Home | MIDDLE click |
+| Touchpad click (bit 3) | — (not used, kept for future) |
+| Volume ± | — (TBD: scroll wheel) |
+
+All three buttons use **50 ms debounce** via `lastLeftChange/lastRightChange/lastMiddleChange` millis timers in `gearvr_update_mouse()`.
+
+**Professional trackpad logic** (see Section 8 below for full detail):
+- Clean `static void handleMouse(int32_t x, int32_t y, bool touched)` function
+- `wasTouched` state machine — first touch frame only records `lastX/lastY`, no cursor movement (prevents startup jump)
+- `int32_t` delta calculation (prevents overflow)
+- Wrap-around protection: reject `|dx| > 500 \|\| |dy| > 500` (coordinate glitches)
+- Deadzone: ignore if both `|dx| < 3 && |dy| < 3`
+- Combined vector-length ballistics: `scale = 0.4 + velocity * 0.025`
+- Static `float remainderX/Y` for sub-pixel accumulation (anti-jitter at low speeds)
+- `sendMouseMove()` helper splits large deltas into `int8_t`-safe chunks (–127..127) to prevent wrap-around flick on fast swipes
+- `Mouse.move()` called **directly from BLE `notifyCallback`** for zero-latency — no polling delay
 
 **Constraint**: USB CDC (Serial) and USB HID can coexist on ESP32-S3 native USB, but `USB CDC On Boot: Enabled` must remain set. The USB stack handles both CDC and HID as a composite device.
 
@@ -512,4 +546,79 @@ void bleHidTask(void *param) {
 
 ---
 
-*Last updated: Phase 1 + Phase 5 + Phase 6 complete. Stereo ADC (GPIO3 L, GPIO4 R), ambient light sensor auto-brightness (GPIO5), dual-core FreeRTOS, float FFT, dynamic DC removal, 2 VU styles, USB Serial + Web Serial API settings UI with NVS persistence. Next: Phase 2 (AK4493 SPI driver).*
+## 8. Mouse Ballistics — Current Tuning (Authoritative)
+
+All constants live at the top of the USB HID section in `gearvr_controller.cpp` (~line 400):
+
+```cpp
+#define MOUSE_DEADZONE 3              // Ignore raw deltas < 3 units (ADC noise)
+#define MOUSE_BASE_SENS 0.4f          // Base sensitivity (linear term)
+#define MOUSE_ACCEL_FACTOR 0.025f     // Quadratic acceleration coefficient
+#define MOUSE_WRAP_THRESHOLD 500      // Detect false coordinate jumps
+#define MOUSE_HID_MAX 127             // int8_t max for Mouse.move() per call
+#define MOUSE_INVERT_X false          // X not inverted
+#define MOUSE_INVERT_Y false          // Y not inverted (user-tuned; set true if up/down swapped)
+```
+
+### 8.1 `handleMouse()` Algorithm (per BLE packet)
+
+```
+1. If !touched → reset wasTouched, remainderX/Y, return
+2. If first touch frame (!wasTouched) → record lastX/Y, set wasTouched=true, return (no cursor move!)
+3. dx = x - lastX; dy = y - lastY           // int32_t to prevent overflow
+4. If |dx|>500 || |dy|>500 → wrap-around glitch, update lastX/Y, return
+5. If |dx|<3 && |dy|<3 → deadzone, return (don't update lastX/Y; allow accumulation)
+6. Apply MOUSE_INVERT_X/Y if set
+7. velocity = sqrt(dx² + dy²)
+8. scale = 0.4 + velocity * 0.025            // single combined scale → no "diamond" effect
+9. moveX = dx*scale + remainderX
+   moveY = dy*scale + remainderY
+10. finalDx/finalDy = (int32_t) moveX/Y
+    remainderX/Y = moveX/Y - finalDx/Dy      // keep fractional part (sub-pixel)
+11. sendMouseMove(finalDx, finalDy)          // chunks to ±127 per Mouse.move call
+12. lastX = x; lastY = y                     // update at end
+```
+
+### 8.2 `sendMouseMove(int32_t dx, int32_t dy)`
+
+Mouse.move() accepts **`int8_t` only (–127..127)**. A naive cast of large deltas causes wrap-around flick (cursor shoots backward). Implementation loops until both dx and dy drained, emitting ±127 clamps per iteration.
+
+### 8.3 Why each piece exists (common regressions)
+
+| Symptom | Root cause | Fix anchor |
+|---------|-----------|------------|
+| Cursor jumps to corner on first touch | `lastX=0` initial → huge dx on first packet | `wasTouched` state machine (step 2) |
+| "Diamond grid" movement | int truncation of small scaled deltas | `remainderX/Y` accumulator |
+| Cursor flicks backward on fast swipe | int8_t overflow (delta > 127 wraps to negative) | `sendMouseMove` chunked loop |
+| Diagonals feel slower than axes | Per-axis scale was `base + \|dx\|*accel` (independent) | Combined `velocity = sqrt(dx²+dy²)` |
+| Cursor drifts when finger stationary | Sensor noise at sub-pixel deltas | `MOUSE_DEADZONE 3` |
+| Cursor flies when palm leaves pad edge | Coordinate wraps 1023→0 | `MOUSE_WRAP_THRESHOLD 500` |
+| Only covers 1/4 of FHD screen | Weak base sensitivity / accel | `BASE_SENS 0.4`, `ACCEL 0.025` (boosted) |
+| Stuttering/lag | Serial.printf in hot path blocks USB-CDC | All mouse debug gated to `millis() >= 500 ms` throttle, **after** `sendMouseMove` call |
+| Up is down (or vice versa) | Controller orientation vs screen | Toggle `MOUSE_INVERT_Y` |
+
+### 8.4 Data flow
+
+```
+Gear VR BLE notification (60 B, ~100 Hz)
+      ↓
+notifyCallback()                                    ← runs in NimBLE host thread, Core 0
+  ├─ parse bytes 54-56 → rawX/rawY
+  ├─ parse byte 58 → buttons
+  ├─ update gearVR global struct
+  ├─ throttled debug print (every 500 ms)
+  └─ handleMouse(rawX, rawY, fingerOnPad)           ← SYNCHRONOUS — zero polling latency
+         ↓
+         sendMouseMove() → Mouse.move() (TinyUSB)
+         ↓
+         Host OS moves cursor
+
+gearvr_update_mouse() [loop, 100 Hz]
+  └─ only handles BUTTON debounce now; movement is callback-driven
+```
+
+---
+
+*Last updated: Phase 1 + 3 + 4 + 5 + 6 complete. Stereo ADC (GPIO3 L, GPIO4 R), ambient light auto-brightness, dual-core FreeRTOS, float FFT, dynamic DC removal, 2 VU styles, USB Serial + Web Serial settings UI with NVS persistence, **Gear VR BLE client with professional trackpad ballistics (power curve, remainder accumulator, int8_t safe Mouse.move, wrap-around protection)**. Next: Phase 2 (AK4493 SPI driver).*
+
+**Reminder for AI assistants**: see top-of-file warning — do NOT attempt to compile. Edit source only; user tests on real hardware.

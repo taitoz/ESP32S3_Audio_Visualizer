@@ -60,6 +60,9 @@ static uint32_t lastMiddleChange = 0;
 static float remainderX = 0.0f;
 static float remainderY = 0.0f;
 
+// Forward declaration (handleMouse is called in notifyCallback before its definition)
+static void handleMouse(int32_t x, int32_t y, bool touched);
+
 // Helper function to reset mouse state
 static void resetMouseState()
 {
@@ -77,8 +80,7 @@ static void resetMouseState()
 static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify)
 {
     if (length < 60) {
-        Serial.printf("[BLE] Packet too short: %d bytes\n", length);
-        return;
+        return;  // Silently reject short packets (hot path — no Serial)
     }
     
     // === CORRECT 10-BIT PARSING ALGORITHM (from reference implementation) ===
@@ -129,30 +131,14 @@ static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, si
     gearVR.touchX = rawX;
     gearVR.touchY = rawY;
     
-    // === OUTPUT ONLY ON CHANGES ===
-    static bool lastTouchActive = false;
-    static bool lastTrigger = false;
-    static uint16_t lastX = 0;
-    static uint16_t lastY = 0;
-    
-    bool changed = (fingerOnPad != lastTouchActive) || 
-                   (trigger != lastTrigger) ||
-                   (fingerOnPad && (rawX != lastX || rawY != lastY));
-    
-    if (changed) {
+    // === THROTTLED DEBUG OUTPUT (500ms) ===
+    static uint32_t lastDebugPrint = 0;
+    uint32_t now = millis();
+    if (now - lastDebugPrint >= 500) {
         if (fingerOnPad) {
-            Serial.printf("[OK] TOUCH: X=%d Y=%d | TRIG=%d | Click=%d | Buttons: H=%d B=%d V+=%d V-=%d\n", 
-                          rawX, rawY, trigger, touchpadBtn, homeBtn, backBtn, volUp, volDown);
-        } else if (trigger) {
-            Serial.printf("[OK] TRIGGER ONLY | Last X=%d Y=%d\n", gearVR.touchX, gearVR.touchY);
-        } else if (lastTouchActive) {
-            Serial.printf("[OK] TOUCH RELEASED | Last X=%d Y=%d\n", gearVR.touchX, gearVR.touchY);
+            Serial.printf("[BLE] X=%d Y=%d Trig=%d Bat=%d\n", rawX, rawY, trigger, battery);
         }
-        
-        lastTouchActive = fingerOnPad;
-        lastTrigger = trigger;
-        lastX = rawX;
-        lastY = rawY;
+        lastDebugPrint = now;
     }
     
     // Parse IMU data (bytes 4-27, little-endian int16)
@@ -168,7 +154,12 @@ static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, si
     gearVR.magY = (int16_t)((pData[19] << 8) | pData[18]);
     gearVR.magZ = (int16_t)((pData[21] << 8) | pData[20]);
     
-    gearVR.lastUpdateMs = millis();
+    gearVR.lastUpdateMs = now;
+    
+    // === IMMEDIATE MOUSE UPDATE (zero latency) ===
+    // Process mouse movement directly in BLE callback for minimal latency.
+    // This avoids waiting for the next loop() poll cycle.
+    handleMouse((int32_t)rawX, (int32_t)rawY, fingerOnPad);
 }
 
 // Client callbacks
@@ -179,6 +170,10 @@ class ClientCallbacks : public NimBLEClientCallbacks {
         Serial.println("╚════════════════════════════════════════╝");
         Serial.printf("MAC: %s\n", GEARVR_MAC_ADDRESS);
         Serial.printf("RSSI: %d dBm\n", pClient->getRssi());
+        // Optimize BLE connection parameters for lowest latency (7.5ms - 15ms interval)
+        // This enables 60-100 Hz data rate from the controller
+        pClient->updateConnParams(6, 12, 0, 400);
+        Serial.println("[BLE] Connection params updated: interval 7.5-15ms, timeout 4000ms");
         gearVR.connected = true;
     }
     
@@ -201,7 +196,7 @@ void gearvr_init()
     // Create client
     pClient = NimBLEDevice::createClient();
     pClient->setClientCallbacks(new ClientCallbacks());
-    pClient->setConnectionParams(12, 12, 0, 51);  // Low latency
+    pClient->setConnectionParams(6, 12, 0, 400);  // Low latency: 7.5ms-15ms interval, 4s timeout
     pClient->setConnectTimeout(5);
     
     Serial.println("Gear VR Controller initialized. Call gearvr_connect() to connect.");
@@ -409,7 +404,7 @@ void gearvr_update()
 #define MOUSE_WRAP_THRESHOLD 500      // Detect false coordinate jumps
 #define MOUSE_HID_MAX 127             // int8_t max for Mouse.move() per call
 #define MOUSE_INVERT_X false          // Don't invert X axis
-#define MOUSE_INVERT_Y false          // Don't invert Y (was flipped - up/down were swapped)
+#define MOUSE_INVERT_Y false          // Invert Y (Gear VR Y decreases upward)
 
 // Send mouse movement with int8_t overflow protection.
 // Mouse.move() accepts int8_t (-127..127). If delta exceeds range,
@@ -512,18 +507,21 @@ static void handleMouse(int32_t x, int32_t y, bool touched)
     remainderX = moveX - (float)finalDx;
     remainderY = moveY - (float)finalDy;
     
-    // === DEBUG OUTPUT (every 10 frames) ===
-    static uint8_t debugCounter = 0;
-    if (++debugCounter >= 10) {
-        debugCounter = 0;
+    // === SEND TO USB HID (with int8_t overflow protection via loop) ===
+    // Send FIRST — before any Serial I/O — to minimize latency.
+    if (finalDx != 0 || finalDy != 0) {
+        sendMouseMove(finalDx, finalDy);
+    }
+    
+    // === THROTTLED DEBUG OUTPUT (once per 500ms, AFTER mouse move) ===
+    // Serial over USB-OTG is slow; keep it out of the hot path.
+    static uint32_t lastMouseDebug = 0;
+    uint32_t nowMs = millis();
+    if (nowMs - lastMouseDebug >= 500) {
+        lastMouseDebug = nowMs;
         Serial.printf("[MOUSE] raw=(%ld,%ld) vel=%.1f scale=%.2f final=(%ld,%ld) rem=(%.2f,%.2f)\n",
                       (long)dx, (long)dy, velocity, combinedScale,
                       (long)finalDx, (long)finalDy, remainderX, remainderY);
-    }
-    
-    // === SEND TO USB HID (with int8_t overflow protection via loop) ===
-    if (finalDx != 0 || finalDy != 0) {
-        sendMouseMove(finalDx, finalDy);
     }
     
     // === UPDATE LAST POSITION (only at the end) ===
@@ -538,9 +536,9 @@ void gearvr_update_mouse()
         return;
     }
     
-    // === MOUSE MOVEMENT ===
-    handleMouse((int32_t)gearVR.touchX, (int32_t)gearVR.touchY, gearVR.touchActive);
-    
+    // NOTE: Mouse MOVEMENT is handled directly in notifyCallback() for zero latency.
+    // This function only handles button state changes (polled from loop()).
+
     // === MOUSE BUTTONS (with Debounce) ===
     bool leftBtn = gearVR.triggerPressed;      // Trigger -> Left Click
     bool rightBtn = gearVR.backPressed;        // Back -> Right Click
