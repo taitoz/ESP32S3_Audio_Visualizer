@@ -551,6 +551,17 @@ void gearvr_update()
 #define AIR_GYRO_ACCEL       0.7f      // Relative weight of quadratic term at reference rate
 #define AIR_GYRO_MAX         4000      // Clamp extreme spikes (sensor glitch protection)
 #define AIR_EMA_ALPHA        0.55f     // Stronger smoothing — 55% current, 45% history (kills jitter)
+
+// === COMPLEMENTARY FILTER (sensor fusion) ===
+// Fuse gyro rate (fast, drifts) with accel-derived tilt signal (slow, stable).
+// finalRate = gyro*W_GYRO + (accel_as_tilt * ACCEL_SCALE) * W_ACCEL
+//   W_GYRO   = 0.95  →  gyroscope dominates (responsive)
+//   W_ACCEL  = 0.05  →  accelerometer gently nudges cursor away from drifted zero
+//   ACCEL_SCALE brings raw accel (~±16000 @ 1g) into gyro-rate units (~±2000)
+#define AIR_FUSION_ENABLE    1         // 0 = pure gyro, 1 = complementary filter
+#define AIR_FUSION_W_GYRO    0.95f
+#define AIR_FUSION_W_ACCEL   0.05f
+#define AIR_FUSION_ACCEL_SCALE  0.125f
 // Axis mapping: gyroZ (yaw)   → mouse X ;  gyroY (pitch) → mouse Y
 // If cursor flies UP when you tilt DOWN (or right when you turn left) → flip the corresponding INVERT.
 // Symptom guide:
@@ -648,6 +659,22 @@ static void handleAirMouse(bool touched)
     // (b) 30-frame per-touch recalibration, (c) accel-gated stillness tracker.
     float rX = (float)gearVR.gyroZ - gyroBiasZ;   // mouse X  ← yaw
     float rY = (float)gearVR.gyroY - gyroBiasY;   // mouse Y  ← pitch
+    
+#if AIR_FUSION_ENABLE
+    // === COMPLEMENTARY FILTER (sensor fusion) ===
+    // Mix gyro angular rate with accelerometer tilt signal. The accel term
+    // acts as a soft anchor: when controller drifts from its "zero" orientation,
+    // a small restoring rate is injected, pulling the cursor back to rest —
+    // without the "sticky" feel of pure-accel pointing.
+    //
+    // Axis mapping for Gear VR held horizontally, buttons up:
+    //   accelX ≈ lateral tilt  (roll around pitch axis)  → nudges yaw  (mouse X)
+    //   accelY ≈ forward tilt  (pitch around roll axis)  → nudges pitch (mouse Y)
+    float aTiltX = (float)gearVR.accelX * AIR_FUSION_ACCEL_SCALE;
+    float aTiltY = (float)gearVR.accelY * AIR_FUSION_ACCEL_SCALE;
+    rX = rX * AIR_FUSION_W_GYRO + aTiltX * AIR_FUSION_W_ACCEL;
+    rY = rY * AIR_FUSION_W_GYRO + aTiltY * AIR_FUSION_W_ACCEL;
+#endif
     
     if (AIR_MOUSE_INVERT_X) rX = -rX;
     if (AIR_MOUSE_INVERT_Y) rY = -rY;
