@@ -291,6 +291,17 @@ void bleRtcTask(void *param)
 void setup()
 {
     Serial.begin(115200);
+    
+    // ── Parallel UART0 debug (hardware serial on GPIO43/44) ──
+    // ALWAYS works regardless of USB stack / CDC / TinyUSB state.
+    // Connect a cheap USB-UART adapter (CP2102/CH340) to:
+    //   GPIO43 (U0TXD) → adapter RX
+    //   GPIO44 (U0RXD) → adapter TX  (optional, for input)
+    //   GND            → adapter GND
+    // Then: screen /dev/ttyUSB0 115200  (Ubuntu auto-creates the device)
+    Serial0.begin(115200);
+    Serial0.println("\n[UART] ESP32-S3 Audio Visualizer boot");
+    
     Serial.println("ESP32-S3 Audio Visualizer starting...");
     
     // Reconfigure watchdog: exclude IDLE tasks (NimBLE uses CPU 0 heavily)
@@ -361,22 +372,21 @@ void setup()
     Serial.println("RTC init done");
 
     // ── USB HID Mouse + Consumer Control init (USB-OTG composite) ──
+    Serial.setDebugOutput(true);
     Serial.println("Initializing USB HID...");
     
-    // Configure USB device descriptor (must be set BEFORE any begin() call)
-    USB.VID(0xCAFE);  // Custom Vendor ID
-    USB.PID(0x0001);  // Custom Product ID
+    // Use Espressif defaults so Linux (Ubuntu) auto-enumerates both
+    // /dev/ttyACM0 (CDC) AND /dev/input/mouseN (HID) with no manual udev rules.
+    USB.VID(0x303A);  // Espressif
+    USB.PID(0x82ED);  // ESP32-S3 default composite PID
     USB.productName("ESP32-S3 Audio Visualizer");
-    USB.manufacturerName("Taito");
+    USB.manufacturerName("Espressif");
     
-    // CRITICAL: HID interfaces must be registered BEFORE USB.begin().
-    // Otherwise the USB descriptor is built without HID endpoints and
-    // adding them post-enumeration breaks CDC (Serial) on host side.
+    // Start USB stack FIRST (per user preference for Linux composite enumeration),
+    // then attach HID interfaces. TinyUSB on ESP32-S3 accepts late-bound HID.
+    USB.begin();
     Mouse.begin();
     ConsumerControl.begin();
-    
-    // Start USB stack with full composite descriptor (CDC + HID Mouse + HID Consumer)
-    USB.begin();
     
     Serial.println("USB HID composite ready (CDC + Mouse + Consumer)");
     
@@ -436,6 +446,21 @@ void loop()
     
     // Update USB HID Mouse from Gear VR touchpad
     gearvr_update_mouse();
+    
+    // ── Throttled non-blocking debug (once per second) ──
+    // Gated by `if (Serial)` so it silently no-ops when CDC is not connected.
+    static uint32_t lastDebugMs = 0;
+    uint32_t nowMs = millis();
+    if ((nowMs - lastDebugMs) >= 1000) {
+        lastDebugMs = nowMs;
+        if (Serial) {
+            Serial.printf("[DBG] touch=(%u,%u) active=%d accel=(%d,%d,%d) btn=%d/%d/%d bat=%d%%\n",
+                          gearVR.touchX, gearVR.touchY, gearVR.touchActive,
+                          gearVR.accelX, gearVR.accelY, gearVR.accelZ,
+                          gearVR.triggerPressed, gearVR.touchpadClicked, gearVR.backPressed,
+                          gearVR.batteryLevel);
+        }
+    }
     
     vTaskDelay(pdMS_TO_TICKS(10));  // 100 Hz serial polling
 }
