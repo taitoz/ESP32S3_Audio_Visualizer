@@ -89,7 +89,7 @@ static int16_t prevAccelX = 0;
 static int16_t prevAccelY = 0;
 static int16_t prevAccelZ = 0;
 static bool    accelPrimed = false;
-#define ACCEL_STILL_THRESHOLD  35   // |Δaccel| below this = hand is still → kill gyro
+#define ACCEL_STILL_THRESHOLD  20   // |Δaccel| below this = hand is truly still → update bias
 
 // Touch state
 static bool wasTouched = false;
@@ -229,14 +229,30 @@ static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, si
                           gyroBiasX, gyroBiasY, gyroBiasZ, gyroBiasCount);
         }
     }
-    // NOTE: runtime drift-tracking was removed — it progressively absorbed
-    // any sustained gyro reading (e.g. controller held slightly tilted) and
-    // gradually "shifted the zero" in whichever direction the user was
-    // pointing most. Result felt like directional asymmetry (e.g. "down
-    // works, up is blocked" or vice-versa after a while). Now we rely
-    // solely on the 100-sample warmup bias captured at connect time.
-    // If drift becomes noticeable over long sessions, the user can
-    // disconnect/reconnect the controller to re-run warmup calibration.
+    // === STILLNESS CALIBRATION (accelerometer-gated drift tracker) ===
+    // Only update gyro bias when the ACCELEROMETER confirms the controller
+    // is physically still (|Δaccel| < threshold on all axes). Unlike the
+    // earlier gyro-only drift tracker, this CANNOT absorb sustained rotation
+    // because rotation always shows up on accel too. And unlike the earlier
+    // "still-detect", this NEVER force-zeroes the gyro output — it only
+    // nudges bias slowly → no directional asymmetry.
+    else if (accelPrimed) {
+        int32_t dAX = (int32_t)aX - (int32_t)prevAccelX;
+        int32_t dAY = (int32_t)aY - (int32_t)prevAccelY;
+        int32_t dAZ = (int32_t)aZ - (int32_t)prevAccelZ;
+        if (abs(dAX) < ACCEL_STILL_THRESHOLD &&
+            abs(dAY) < ACCEL_STILL_THRESHOLD &&
+            abs(dAZ) < ACCEL_STILL_THRESHOLD) {
+            const float STILLNESS_ALPHA = 0.001f;   // very slow — adapts over seconds
+            gyroBiasX += STILLNESS_ALPHA * ((float)gX - gyroBiasX);
+            gyroBiasY += STILLNESS_ALPHA * ((float)gY - gyroBiasY);
+            gyroBiasZ += STILLNESS_ALPHA * ((float)gZ - gyroBiasZ);
+        }
+    }
+    prevAccelX = aX;
+    prevAccelY = aY;
+    prevAccelZ = aZ;
+    accelPrimed = true;
     
     // Reset EMA history on touch-begin (avoid stale leftovers from previous gesture)
     // and trigger per-touch gyro recalibration — redefines "zero" at every new touch
@@ -244,8 +260,7 @@ static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, si
     if (fingerOnPad && !wasTouched) {
         emaDeltaX = 0.0f;
         emaDeltaY = 0.0f;
-        remainderX = 0.0f;
-        remainderY = 0.0f;
+        // remainderX/Y intentionally NOT reset (persist sub-pixel fractions)
         touchRecalibCount = 0;
         touchBiasAccumX = 0.0f;
         touchBiasAccumY = 0.0f;
@@ -536,6 +551,11 @@ void gearvr_update()
 #define AIR_GYRO_ACCEL       0.7f      // Relative weight of quadratic term at reference rate
 #define AIR_GYRO_MAX         4000      // Clamp extreme spikes (sensor glitch protection)
 #define AIR_EMA_ALPHA        0.55f     // Stronger smoothing — 55% current, 45% history (kills jitter)
+// Axis mapping: gyroZ (yaw)   → mouse X ;  gyroY (pitch) → mouse Y
+// If cursor flies UP when you tilt DOWN (or right when you turn left) → flip the corresponding INVERT.
+// Symptom guide:
+//   "Cursor flies up at rest / when controller is horizontal"           → set INVERT_Y = true
+//   "Cursor moves opposite of expected horizontally (left/right swap)"  → toggle INVERT_X
 #define AIR_MOUSE_INVERT_X   true      // Flip if horizontal axis feels wrong
 #define AIR_MOUSE_INVERT_Y   false     // Flip if vertical axis feels wrong
 #define MOUSE_HID_MAX        127       // int8_t max per Mouse.move() call
@@ -600,14 +620,12 @@ static void handleAirMouse(bool touched)
         wasTouched = false;
         emaDeltaX = 0.0f;
         emaDeltaY = 0.0f;
-        remainderX = 0.0f;
-        remainderY = 0.0f;
+        // NOTE: remainderX/Y NOT reset — persist sub-pixel fractions across
+        // touch sessions so no accumulated motion is ever lost.
         return;
     }
     if (!wasTouched) {
         wasTouched = true;
-        remainderX = 0.0f;
-        remainderY = 0.0f;
         return;   // skip first frame to let EMA settle
     }
     
@@ -622,20 +640,14 @@ static void handleAirMouse(bool touched)
     if (millis() < scrollLockUntilMs) {
         emaDeltaX = 0.0f;
         emaDeltaY = 0.0f;
-        remainderX = 0.0f;
-        remainderY = 0.0f;
         return;
     }
     
-    // Raw gyro minus tracked static bias → angular rate in sensor units
+    // Raw gyro minus tracked static bias → angular rate in sensor units.
+    // Bias is maintained elsewhere by: (a) 100-sample warmup at connect,
+    // (b) 30-frame per-touch recalibration, (c) accel-gated stillness tracker.
     float rX = (float)gearVR.gyroZ - gyroBiasZ;   // mouse X  ← yaw
     float rY = (float)gearVR.gyroY - gyroBiasY;   // mouse Y  ← pitch
-    
-    // NOTE: accel-based still-detect was removed here — it caused directional
-    // asymmetry (e.g. "up is harder"): slow wrist tilts upward barely change
-    // accel magnitude because gravity still projects on Z, so the detector
-    // incorrectly zeroed gyro on legitimate slow up-movements.
-    // The slow-EMA bias tracker above already absorbs static drift.
     
     if (AIR_MOUSE_INVERT_X) rX = -rX;
     if (AIR_MOUSE_INVERT_Y) rY = -rY;

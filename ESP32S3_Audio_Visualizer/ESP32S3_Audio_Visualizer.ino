@@ -382,6 +382,16 @@ void setup()
     USB.productName("ESP32-S3 Audio Visualizer");
     USB.manufacturerName("Espressif");
     
+    // === COMPOSITE DEVICE DESCRIPTORS (IAD) ===
+    // Critical for Windows — without these Windows sees only the first
+    // interface (HID Mouse) and hides the CDC Serial port. The Interface
+    // Association Descriptor tells the OS "this is a multi-function device,
+    // enumerate ALL interfaces". Must be set BEFORE USB.begin().
+    USB.usbClass(TUSB_CLASS_MISC);
+    USB.usbSubClass(0x02);           // Common class
+    USB.usbProtocol(0x01);           // IAD (Interface Association Descriptor)
+    USB.usbVersion(0x0200);          // USB 2.0
+    
     // Start USB stack FIRST (per user preference for Linux composite enumeration),
     // then attach HID interfaces. TinyUSB on ESP32-S3 accepts late-bound HID.
     USB.begin();
