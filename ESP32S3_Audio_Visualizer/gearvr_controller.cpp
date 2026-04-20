@@ -403,13 +403,133 @@ void gearvr_update()
  ******************************************************************************/
 
 // Professional Trackpad Configuration (Power Curve for FHD)
-#define MOUSE_DEADZONE 3        // Ignore movements < 3 units (ADC noise filter)
-#define MOUSE_BASE_SENS 0.2f    // Base sensitivity for slow/precise movements
-#define MOUSE_ACCEL_FACTOR 0.01f   // Power curve acceleration factor
-#define MOUSE_MAX_STEP 150      // Max pixels per update (allow fast swipes)
-#define MOUSE_WRAP_THRESHOLD 500   // Detect false coordinate jumps (wrap-around fix)
-#define MOUSE_INVERT_X false    // Don't invert X axis
-#define MOUSE_INVERT_Y false    // Don't invert Y axis
+#define MOUSE_DEADZONE 3              // Ignore raw deltas < 3 units (ADC noise)
+#define MOUSE_BASE_SENS 0.4f          // Base sensitivity (linear term) - boosted
+#define MOUSE_ACCEL_FACTOR 0.025f     // Quadratic acceleration coefficient - boosted
+#define MOUSE_WRAP_THRESHOLD 500      // Detect false coordinate jumps
+#define MOUSE_HID_MAX 127             // int8_t max for Mouse.move() per call
+#define MOUSE_INVERT_X false          // Don't invert X axis
+#define MOUSE_INVERT_Y false          // Don't invert Y (was flipped - up/down were swapped)
+
+// Send mouse movement with int8_t overflow protection.
+// Mouse.move() accepts int8_t (-127..127). If delta exceeds range,
+// we split it into multiple calls to prevent wrap-around (backward flick).
+static void sendMouseMove(int32_t dx, int32_t dy)
+{
+    while (dx != 0 || dy != 0) {
+        int8_t stepX = 0;
+        int8_t stepY = 0;
+        
+        if (dx > MOUSE_HID_MAX) {
+            stepX = MOUSE_HID_MAX;
+            dx -= MOUSE_HID_MAX;
+        } else if (dx < -MOUSE_HID_MAX) {
+            stepX = -MOUSE_HID_MAX;
+            dx += MOUSE_HID_MAX;
+        } else {
+            stepX = (int8_t)dx;
+            dx = 0;
+        }
+        
+        if (dy > MOUSE_HID_MAX) {
+            stepY = MOUSE_HID_MAX;
+            dy -= MOUSE_HID_MAX;
+        } else if (dy < -MOUSE_HID_MAX) {
+            stepY = -MOUSE_HID_MAX;
+            dy += MOUSE_HID_MAX;
+        } else {
+            stepY = (int8_t)dy;
+            dy = 0;
+        }
+        
+        Mouse.move(stepX, stepY);
+    }
+}
+
+// Clean handleMouse() function - processes touch state and moves cursor.
+// Parameters: absolute touch coords (0-1024), touched flag.
+static void handleMouse(int32_t x, int32_t y, bool touched)
+{
+    // === TOUCH STATE MACHINE ===
+    if (!touched) {
+        // Finger released - reset state
+        wasTouched = false;
+        remainderX = 0.0f;
+        remainderY = 0.0f;
+        return;
+    }
+    
+    // First touch frame - initialize lastX/Y, do NOT move cursor (prevents jump)
+    if (!wasTouched) {
+        mouseLastX = x;
+        mouseLastY = y;
+        wasTouched = true;
+        return;
+    }
+    
+    // === CALCULATE RAW DELTA (int32_t to prevent overflow) ===
+    int32_t dx = x - (int32_t)mouseLastX;
+    int32_t dy = y - (int32_t)mouseLastY;
+    
+    // === WRAP-AROUND PROTECTION ===
+    // Reject impossibly large jumps (coordinate glitches at boundaries)
+    if (abs(dx) > MOUSE_WRAP_THRESHOLD || abs(dy) > MOUSE_WRAP_THRESHOLD) {
+        mouseLastX = x;
+        mouseLastY = y;
+        return;
+    }
+    
+    // === DEADZONE (noise filter) ===
+    // Ignore if BOTH axes are below threshold
+    if (abs(dx) < MOUSE_DEADZONE && abs(dy) < MOUSE_DEADZONE) {
+        return;  // Don't update lastX/Y - allow accumulation on next frame
+    }
+    
+    // === Y-AXIS INVERSION ===
+    if (MOUSE_INVERT_X) dx = -dx;
+    if (MOUSE_INVERT_Y) dy = -dy;
+    
+    // === DYNAMIC BALLISTICS (Combined Vector-Length Scale) ===
+    // Use a SINGLE scale based on total vector length for both axes.
+    // This eliminates the "diamond" effect where diagonals felt slower.
+    // Formula: scale = base + |velocity| * accel
+    //          move = delta * scale   (quadratic because scale grows with |delta|)
+    float velocity = sqrtf((float)(dx * dx + dy * dy));
+    float combinedScale = MOUSE_BASE_SENS + (velocity * MOUSE_ACCEL_FACTOR);
+    
+    float moveX = (float)dx * combinedScale;
+    float moveY = (float)dy * combinedScale;
+    
+    // === FLOATING POINT ACCUMULATOR (anti-jitter, sub-pixel precision) ===
+    // remainderX/Y are static globals - persist between calls
+    moveX += remainderX;
+    moveY += remainderY;
+    
+    int32_t finalDx = (int32_t)moveX;
+    int32_t finalDy = (int32_t)moveY;
+    
+    // Keep fractional part for next frame
+    remainderX = moveX - (float)finalDx;
+    remainderY = moveY - (float)finalDy;
+    
+    // === DEBUG OUTPUT (every 10 frames) ===
+    static uint8_t debugCounter = 0;
+    if (++debugCounter >= 10) {
+        debugCounter = 0;
+        Serial.printf("[MOUSE] raw=(%ld,%ld) vel=%.1f scale=%.2f final=(%ld,%ld) rem=(%.2f,%.2f)\n",
+                      (long)dx, (long)dy, velocity, combinedScale,
+                      (long)finalDx, (long)finalDy, remainderX, remainderY);
+    }
+    
+    // === SEND TO USB HID (with int8_t overflow protection via loop) ===
+    if (finalDx != 0 || finalDy != 0) {
+        sendMouseMove(finalDx, finalDy);
+    }
+    
+    // === UPDATE LAST POSITION (only at the end) ===
+    mouseLastX = x;
+    mouseLastY = y;
+}
 
 void gearvr_update_mouse()
 {
@@ -418,93 +538,8 @@ void gearvr_update_mouse()
         return;
     }
     
-    // Note: USB HID Mouse operations are non-blocking on ESP32-S3
-    // If USB is not connected, Mouse.move() and Mouse.press/release() are no-ops
-    
-    // === PROFESSIONAL TRACKPAD LOGIC (Ballistics + Anti-Jitter + Wrap-around Fix) ===
-    
-    if (gearVR.touchActive) {
-        // First touch frame - just record position, don't move cursor (prevent jump)
-        if (!wasTouched) {
-            mouseLastX = gearVR.touchX;
-            mouseLastY = gearVR.touchY;
-            wasTouched = true;
-            goto handle_buttons;  // Skip movement on first touch
-        }
-        
-        // Calculate raw delta using int32_t to prevent overflow
-        int32_t dx = (int32_t)gearVR.touchX - (int32_t)mouseLastX;
-        int32_t dy = (int32_t)gearVR.touchY - (int32_t)mouseLastY;
-        
-        // Update last position for next frame
-        mouseLastX = gearVR.touchX;
-        mouseLastY = gearVR.touchY;
-        
-        // Fix wrap-around / false jumps (coordinate glitches at boundaries)
-        // If delta is too large, it's a false jump - ignore it
-        if (abs(dx) > 500 || abs(dy) > 500) {
-            // False jump detected - reset and skip
-            goto handle_buttons;
-        }
-        
-        // Apply deadzone (filter ADC noise) - hard threshold
-        if (abs(dx) < MOUSE_DEADZONE && abs(dy) < MOUSE_DEADZONE) {
-            goto handle_buttons;  // No movement
-        }
-        
-        // Apply axis inversion
-        if (MOUSE_INVERT_X) dx = -dx;
-        if (MOUSE_INVERT_Y) dy = -dy;
-        
-        // Calculate speed for power curve acceleration
-        float speed = sqrt((float)(dx * dx + dy * dy));
-        
-        // Power curve: force = baseSens + (speed * accelFactor)
-        // This provides quadratic-like acceleration for FHD monitors
-        float force = MOUSE_BASE_SENS + (speed * MOUSE_ACCEL_FACTOR);
-        
-        // Apply force to delta with remainder accumulation
-        float moveX = (float)dx * force + remainderX;
-        float moveY = (float)dy * force + remainderY;
-        
-        // Extract integer part for Mouse.move()
-        int16_t finalDx = (int16_t)moveX;
-        int16_t finalDy = (int16_t)moveY;
-        
-        // Keep fractional part in remainder (anti-jitter)
-        remainderX = moveX - (float)finalDx;
-        remainderY = moveY - (float)finalDy;
-        
-        // Clamp to max step (prevent cursor flying)
-        if (finalDx > MOUSE_MAX_STEP) {
-            finalDx = MOUSE_MAX_STEP;
-            remainderX = 0.0f;
-        }
-        if (finalDx < -MOUSE_MAX_STEP) {
-            finalDx = -MOUSE_MAX_STEP;
-            remainderX = 0.0f;
-        }
-        if (finalDy > MOUSE_MAX_STEP) {
-            finalDy = MOUSE_MAX_STEP;
-            remainderY = 0.0f;
-        }
-        if (finalDy < -MOUSE_MAX_STEP) {
-            finalDy = -MOUSE_MAX_STEP;
-            remainderY = 0.0f;
-        }
-        
-        // Send movement to USB HID
-        if (finalDx != 0 || finalDy != 0) {
-            Mouse.move(finalDx, finalDy);
-        }
-    } else {
-        // Touch released - reset state
-        wasTouched = false;
-        remainderX = 0.0f;
-        remainderY = 0.0f;
-    }
-    
-handle_buttons:
+    // === MOUSE MOVEMENT ===
+    handleMouse((int32_t)gearVR.touchX, (int32_t)gearVR.touchY, gearVR.touchActive);
     
     // === MOUSE BUTTONS (with Debounce) ===
     bool leftBtn = gearVR.triggerPressed;      // Trigger -> Left Click
