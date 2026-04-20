@@ -57,19 +57,49 @@ static float gyroBiasY = 0.0f;
 static float gyroBiasZ = 0.0f;
 static bool  gyroBiasPrimed = false;
 static uint16_t gyroBiasCount = 0;
-#define GYRO_BIAS_WARMUP_SAMPLES  30    // ~300ms averaging window at ~100Hz BLE rate
+#define GYRO_BIAS_WARMUP_SAMPLES  100   // ~1 s averaging window at ~100Hz BLE rate
 
 // Minimal EMA (alpha = 0.9 — kills single-sample sensor noise only)
 static float emaDeltaX = 0.0f;
 static float emaDeltaY = 0.0f;
 
+// Sub-pixel float accumulators (prevent int-truncation "grid" jitter)
+static float remainderX = 0.0f;
+static float remainderY = 0.0f;
+
+// Per-touch recalibration (resets "zero" every time finger lands on pad)
+//   Frame budget: [PRE_SETTLE skipped] + [SAMPLES accumulated] = total freeze time
+//   Pre-settle avoids contaminating bias with the finger-landing transient.
+#define TOUCH_RECALIB_PRE_SETTLE   5    // ~50 ms — wait for finger to steady after landing
+#define TOUCH_RECALIB_SAMPLES      25   // ~250 ms of averaging for a robust new "zero"
+#define TOUCH_RECALIB_TOTAL        (TOUCH_RECALIB_PRE_SETTLE + TOUCH_RECALIB_SAMPLES)
+static uint16_t touchRecalibCount = TOUCH_RECALIB_TOTAL;   // not recalibrating initially
+static float    touchBiasAccumX = 0.0f;
+static float    touchBiasAccumY = 0.0f;
+static float    touchBiasAccumZ = 0.0f;
+
+// Scroll-vs-mouse mutual exclusion: fast touchpad motion locks the air mouse
+// for a short time so scrolling doesn't fight with gyro cursor movement.
+#define SCROLL_LOCK_THRESHOLD  5      // touchpad |dx|+|dy| above this = "scrolling"
+#define SCROLL_LOCK_MS         100    // block air mouse for this long after scroll event
+static uint32_t scrollLockUntilMs = 0;
+
+// Previous accelerometer values (for "still" detection → force-zero gyro)
+static int16_t prevAccelX = 0;
+static int16_t prevAccelY = 0;
+static int16_t prevAccelZ = 0;
+static bool    accelPrimed = false;
+#define ACCEL_STILL_THRESHOLD  35   // |Δaccel| below this = hand is still → kill gyro
+
 // Touch state
 static bool wasTouched = false;
 static uint16_t scrollLastY = 0;
+static uint16_t scrollLastX = 0;
 static bool scrollInit = false;
 
-// Scroll sub-pixel accumulator (cursor is direct pass-through, no remainders)
-static float scrollRemainder = 0.0f;
+// Scroll sub-pixel accumulators (Y = wheel, X = pan/horizontal)
+static float scrollRemainder  = 0.0f;   // vertical
+static float scrollRemainderX = 0.0f;   // horizontal
 
 // Button state tracking + debounce
 static bool mouseLastLeft = false;
@@ -95,7 +125,14 @@ static void resetMouseState()
     scrollInit = false;
     emaDeltaX = 0.0f;
     emaDeltaY = 0.0f;
-    scrollRemainder = 0.0f;
+    scrollRemainder  = 0.0f;
+    scrollRemainderX = 0.0f;
+    remainderX = remainderY = 0.0f;
+    touchRecalibCount = TOUCH_RECALIB_TOTAL;   // no pending recalibration
+    touchBiasAccumX = touchBiasAccumY = touchBiasAccumZ = 0.0f;
+    scrollLockUntilMs = 0;
+    accelPrimed = false;
+    prevAccelX = prevAccelY = prevAccelZ = 0;
     gyroBiasPrimed = false;   // re-prime bias on next connect
     gyroBiasCount = 0;
     gyroBiasX = gyroBiasY = gyroBiasZ = 0.0f;
@@ -191,28 +228,57 @@ static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, si
             Serial.printf("[GYRO] Bias calibrated: X=%.1f Y=%.1f Z=%.1f (from %u samples)\n",
                           gyroBiasX, gyroBiasY, gyroBiasZ, gyroBiasCount);
         }
-    } else {
-        const float DRIFT_ALPHA = 0.002f;     // very slow — only adapts over seconds
-        const float STILL_LIMIT = 40.0f;      // "still" if |raw-bias| < 40 on all axes
-        float dcX = (float)gX - gyroBiasX;
-        float dcY = (float)gY - gyroBiasY;
-        float dcZ = (float)gZ - gyroBiasZ;
-        if (fabsf(dcX) < STILL_LIMIT && fabsf(dcY) < STILL_LIMIT && fabsf(dcZ) < STILL_LIMIT) {
-            gyroBiasX += DRIFT_ALPHA * dcX;
-            gyroBiasY += DRIFT_ALPHA * dcY;
-            gyroBiasZ += DRIFT_ALPHA * dcZ;
-        }
     }
+    // NOTE: runtime drift-tracking was removed — it progressively absorbed
+    // any sustained gyro reading (e.g. controller held slightly tilted) and
+    // gradually "shifted the zero" in whichever direction the user was
+    // pointing most. Result felt like directional asymmetry (e.g. "down
+    // works, up is blocked" or vice-versa after a while). Now we rely
+    // solely on the 100-sample warmup bias captured at connect time.
+    // If drift becomes noticeable over long sessions, the user can
+    // disconnect/reconnect the controller to re-run warmup calibration.
     
     // Reset EMA history on touch-begin (avoid stale leftovers from previous gesture)
+    // and trigger per-touch gyro recalibration — redefines "zero" at every new touch
+    // so users can rest their arm, re-grip, and start pointing from any orientation.
     if (fingerOnPad && !wasTouched) {
         emaDeltaX = 0.0f;
         emaDeltaY = 0.0f;
+        remainderX = 0.0f;
+        remainderY = 0.0f;
+        touchRecalibCount = 0;
+        touchBiasAccumX = 0.0f;
+        touchBiasAccumY = 0.0f;
+        touchBiasAccumZ = 0.0f;
     }
     
-    // === IMMEDIATE AIR MOUSE + SCROLL (zero latency, no hot-path Serial) ===
-    handleAirMouse(fingerOnPad);
+    // === PER-TOUCH RECALIBRATION ===
+    // Phase 1 (PRE_SETTLE): skip first few frames — finger-landing transient
+    //                       would contaminate the bias (e.g. tiny recoil when
+    //                       user presses the pad makes the controller twitch).
+    // Phase 2 (accumulate):  running average of gyro readings → new bias.
+    // Cursor is frozen for the whole window (handleAirMouse gates on counter).
+    if (fingerOnPad && touchRecalibCount < TOUCH_RECALIB_TOTAL) {
+        touchRecalibCount++;
+        if (touchRecalibCount > TOUCH_RECALIB_PRE_SETTLE) {
+            uint16_t n = touchRecalibCount - TOUCH_RECALIB_PRE_SETTLE;
+            float invN = 1.0f / (float)n;
+            touchBiasAccumX += ((float)gX - touchBiasAccumX) * invN;
+            touchBiasAccumY += ((float)gY - touchBiasAccumY) * invN;
+            touchBiasAccumZ += ((float)gZ - touchBiasAccumZ) * invN;
+            if (touchRecalibCount >= TOUCH_RECALIB_TOTAL) {
+                gyroBiasX = touchBiasAccumX;
+                gyroBiasY = touchBiasAccumY;
+                gyroBiasZ = touchBiasAccumZ;
+            }
+        }
+    }
+    
+    // === IMMEDIATE SCROLL + AIR MOUSE (order matters!) ===
+    // handleScroll runs first: it may set scrollLockUntilMs if finger is
+    // moving fast, then handleAirMouse will honor that lock in the same frame.
     handleScroll(rawX, rawY, fingerOnPad);
+    handleAirMouse(fingerOnPad);
 }
 
 // Client callbacks
@@ -464,10 +530,12 @@ void gearvr_update()
 // Air Mouse configuration — GYROSCOPE angular-rate pointing
 // Cursor velocity = gyro rate × sensitivity. No acceleration curve, no soft zone —
 // gyro reads 0 at rest so deadzone can be minimal (just noise floor).
-#define AIR_GYRO_DEADZONE    2         // Ignore |rate - bias| below this (sensor noise floor)
-#define AIR_GYRO_SENS        0.04f     // Gyro rate → cursor pixels per BLE frame
+#define AIR_GYRO_DEADZONE    10        // Soft vector deadzone radius (quadratic roll-off below this)
+#define AIR_GYRO_SENS        0.05f     // Linear sensitivity
+#define AIR_GYRO_ACCEL_REF   800.0f    // Rate at which quadratic term equals linear term (units)
+#define AIR_GYRO_ACCEL       0.7f      // Relative weight of quadratic term at reference rate
 #define AIR_GYRO_MAX         4000      // Clamp extreme spikes (sensor glitch protection)
-#define AIR_EMA_ALPHA        0.90f     // Minimal EMA — 90% current, 10% history
+#define AIR_EMA_ALPHA        0.55f     // Stronger smoothing — 55% current, 45% history (kills jitter)
 #define AIR_MOUSE_INVERT_X   true      // Flip if horizontal axis feels wrong
 #define AIR_MOUSE_INVERT_Y   false     // Flip if vertical axis feels wrong
 #define MOUSE_HID_MAX        127       // int8_t max per Mouse.move() call
@@ -532,16 +600,42 @@ static void handleAirMouse(bool touched)
         wasTouched = false;
         emaDeltaX = 0.0f;
         emaDeltaY = 0.0f;
+        remainderX = 0.0f;
+        remainderY = 0.0f;
         return;
     }
     if (!wasTouched) {
         wasTouched = true;
+        remainderX = 0.0f;
+        remainderY = 0.0f;
         return;   // skip first frame to let EMA settle
+    }
+    
+    // Freeze while per-touch recalibration is in progress
+    if (touchRecalibCount < TOUCH_RECALIB_TOTAL) {
+        emaDeltaX = 0.0f;
+        emaDeltaY = 0.0f;
+        return;
+    }
+    
+    // Freeze while user is actively scrolling (set by handleScroll)
+    if (millis() < scrollLockUntilMs) {
+        emaDeltaX = 0.0f;
+        emaDeltaY = 0.0f;
+        remainderX = 0.0f;
+        remainderY = 0.0f;
+        return;
     }
     
     // Raw gyro minus tracked static bias → angular rate in sensor units
     float rX = (float)gearVR.gyroZ - gyroBiasZ;   // mouse X  ← yaw
     float rY = (float)gearVR.gyroY - gyroBiasY;   // mouse Y  ← pitch
+    
+    // NOTE: accel-based still-detect was removed here — it caused directional
+    // asymmetry (e.g. "up is harder"): slow wrist tilts upward barely change
+    // accel magnitude because gravity still projects on Z, so the detector
+    // incorrectly zeroed gyro on legitimate slow up-movements.
+    // The slow-EMA bias tracker above already absorbs static drift.
     
     if (AIR_MOUSE_INVERT_X) rX = -rX;
     if (AIR_MOUSE_INVERT_Y) rY = -rY;
@@ -552,19 +646,47 @@ static void handleAirMouse(bool touched)
     if (rY >  AIR_GYRO_MAX) rY =  AIR_GYRO_MAX;
     if (rY < -AIR_GYRO_MAX) rY = -AIR_GYRO_MAX;
     
-    // Minimal deadzone (just under sensor noise floor)
-    if (fabsf(rX) < AIR_GYRO_DEADZONE) rX = 0.0f;
-    if (fabsf(rY) < AIR_GYRO_DEADZONE) rY = 0.0f;
-    
-    // Minimal EMA — kills only single-sample noise
+    // Minimal EMA FIRST — smooths raw noise before any thresholding
     emaDeltaX = AIR_EMA_ALPHA * rX + (1.0f - AIR_EMA_ALPHA) * emaDeltaX;
     emaDeltaY = AIR_EMA_ALPHA * rY + (1.0f - AIR_EMA_ALPHA) * emaDeltaY;
     
-    int16_t moveX = (int16_t)(emaDeltaX * AIR_GYRO_SENS);
-    int16_t moveY = (int16_t)(emaDeltaY * AIR_GYRO_SENS);
+    // === SOFT VECTOR DEADZONE (anti-diamond) ===
+    // Hard thresholds produce on/off flapping right at the boundary → visible
+    // "diamond grid" steps. Instead, apply a smooth quadratic roll-off:
+    //   scale = (mag/DZ)²  when mag < DZ   (→ 0 at mag=0, 1 at mag=DZ)
+    //   scale = 1          when mag ≥ DZ
+    // Low-amplitude noise is multiplied by a tiny scale and disappears into
+    // the float accumulator without snapping, while legitimate motion is
+    // unaffected. Diagonals stay perfectly smooth.
+    float mag = sqrtf(emaDeltaX * emaDeltaX + emaDeltaY * emaDeltaY);
+    if (mag < AIR_GYRO_DEADZONE && AIR_GYRO_DEADZONE > 0.0f) {
+        float t = mag / (float)AIR_GYRO_DEADZONE;
+        float scale = t * t;             // quadratic roll-off
+        emaDeltaX *= scale;
+        emaDeltaY *= scale;
+    }
+    
+    // === UNIFIED VECTOR GAIN + SUB-PIXEL FLOAT ACCUMULATOR ===
+    // Use ONE scalar gain derived from vector magnitude (not per-axis) so both
+    // axes always scale by the same factor → diagonals stay on a straight line.
+    // Per-axis independent gains caused subtle direction skew at low rates,
+    // which manifested as "diamond grid" staircasing.
+    //
+    // Emission via roundf() (not truncation): rounds to nearest integer symmetrically
+    // for positive & negative, so pixel steps fire at every half-unit instead of
+    // only at full units → twice the step resolution, cleaner diagonals.
+    float vmag = sqrtf(emaDeltaX * emaDeltaX + emaDeltaY * emaDeltaY);
+    float gain = AIR_GYRO_SENS * (1.0f + AIR_GYRO_ACCEL * vmag / AIR_GYRO_ACCEL_REF);
+    remainderX += emaDeltaX * gain;
+    remainderY += emaDeltaY * gain;
+    
+    int32_t moveX = (int32_t)roundf(remainderX);   // round to nearest (symmetric)
+    int32_t moveY = (int32_t)roundf(remainderY);
+    remainderX   -= (float)moveX;                   // keep fractional part
+    remainderY   -= (float)moveY;
     
     if (moveX != 0 || moveY != 0) {
-        sendMouseMove((int32_t)moveX, (int32_t)moveY);
+        sendMouseMove(moveX, moveY);
     }
 }
 
@@ -573,42 +695,69 @@ static void handleAirMouse(bool touched)
 // wrap-around on fast swipes, and a float accumulator for smooth sub-unit scroll.
 static void handleScroll(uint16_t touchX, uint16_t touchY, bool touched)
 {
-    (void)touchX;  // not used in scroll, but kept for signature symmetry
-    
     if (!touched) {
         scrollInit = false;
-        scrollRemainder = 0.0f;
+        scrollRemainder  = 0.0f;
+        scrollRemainderX = 0.0f;
         return;
     }
     
-    // First touch frame after finger landed — seed the reference Y, don't scroll yet
+    // Don't scroll while touchpad is physically clicked (prevents scroll during click-drag)
+    if (gearVR.touchpadClicked) {
+        scrollInit = false;   // reseed on next non-clicked frame
+        return;
+    }
+    
+    // First touch frame after finger landed — seed the reference X/Y, don't scroll yet
     if (!scrollInit) {
+        scrollLastX = touchX;
         scrollLastY = touchY;
-        scrollInit = true;
+        scrollInit  = true;
         return;
     }
     
+    int32_t dx = (int32_t)touchX - (int32_t)scrollLastX;
     int32_t dy = (int32_t)touchY - (int32_t)scrollLastY;
+    scrollLastX = touchX;
     scrollLastY = touchY;
     
     // Reject coordinate glitches (wrap-around)
-    if (abs(dy) > SCROLL_WRAP_THRESHOLD) return;
+    if (abs(dx) > SCROLL_WRAP_THRESHOLD || abs(dy) > SCROLL_WRAP_THRESHOLD) return;
     
-    // Deadzone
-    if (abs(dy) < SCROLL_DEADZONE) return;
+    // === SCROLL/MOUSE MUTUAL EXCLUSION ===
+    // If finger is moving noticeably on the pad → user intent is "scroll",
+    // not "point". Lock out gyro air-mouse for SCROLL_LOCK_MS to eliminate
+    // the conflict between small finger drift and cursor movement.
+    if (abs(dx) >= SCROLL_LOCK_THRESHOLD || abs(dy) >= SCROLL_LOCK_THRESHOLD) {
+        scrollLockUntilMs = millis() + SCROLL_LOCK_MS;
+    }
     
-    // Accumulate with remainder so fractional scroll counts aren't lost
-    // Note: natural scroll direction — finger moves DOWN on pad → content scrolls DOWN
-    // (invert sign to match standard mouse wheel: down = negative wheel)
-    float scrollF = -(float)dy * SCROLL_SENS + scrollRemainder;
-    int32_t scrollUnits = (int32_t)scrollF;
-    scrollRemainder = scrollF - (float)scrollUnits;
+    // === VERTICAL WHEEL ===
+    // Natural direction: finger moves DOWN → content scrolls DOWN → negative wheel
+    int8_t vWheel = 0;
+    if (abs(dy) >= SCROLL_DEADZONE) {
+        float sF = -(float)dy * SCROLL_SENS + scrollRemainder;
+        int32_t units = (int32_t)sF;
+        scrollRemainder = sF - (float)units;
+        if (units >  127) units =  127;
+        if (units < -127) units = -127;
+        vWheel = (int8_t)units;
+    }
     
-    if (scrollUnits != 0) {
-        // Clamp scroll to int8_t range per HID report
-        if (scrollUnits > 127)  scrollUnits = 127;
-        if (scrollUnits < -127) scrollUnits = -127;
-        Mouse.move(0, 0, (int8_t)scrollUnits);
+    // === HORIZONTAL PAN ===
+    // Finger right → content scrolls right → positive pan
+    int8_t hWheel = 0;
+    if (abs(dx) >= SCROLL_DEADZONE) {
+        float sF = (float)dx * SCROLL_SENS + scrollRemainderX;
+        int32_t units = (int32_t)sF;
+        scrollRemainderX = sF - (float)units;
+        if (units >  127) units =  127;
+        if (units < -127) units = -127;
+        hWheel = (int8_t)units;
+    }
+    
+    if (vWheel != 0 || hWheel != 0) {
+        Mouse.move(0, 0, vWheel, hWheel);   // 4-arg: x, y, wheel, pan
     }
 }
 
