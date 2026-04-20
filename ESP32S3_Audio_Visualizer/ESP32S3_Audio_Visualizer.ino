@@ -448,17 +448,22 @@ void loop()
     gearvr_update_mouse();
     
     // ── Throttled non-blocking debug (once per second) ──
-    // Gated by `if (Serial)` so it silently no-ops when CDC is not connected.
+    // Emitted to BOTH USB CDC (if host connected) AND UART0 (always works).
     static uint32_t lastDebugMs = 0;
     uint32_t nowMs = millis();
     if ((nowMs - lastDebugMs) >= 1000) {
         lastDebugMs = nowMs;
-        if (Serial) {
-            Serial.printf("[DBG] touch=(%u,%u) active=%d accel=(%d,%d,%d) btn=%d/%d/%d bat=%d%%\n",
-                          gearVR.touchX, gearVR.touchY, gearVR.touchActive,
-                          gearVR.accelX, gearVR.accelY, gearVR.accelZ,
-                          gearVR.triggerPressed, gearVR.touchpadClicked, gearVR.backPressed,
-                          gearVR.batteryLevel);
+        char dbg[192];
+        int n = snprintf(dbg, sizeof(dbg),
+                         "[DBG] touch=(%u,%u) active=%d accel=(%d,%d,%d) trig=%d tp=%d home=%d back=%d v+=%d v-=%d bat=%d%%\n",
+                         gearVR.touchX, gearVR.touchY, gearVR.touchActive,
+                         gearVR.accelX, gearVR.accelY, gearVR.accelZ,
+                         gearVR.triggerPressed, gearVR.touchpadClicked, gearVR.homePressed,
+                         gearVR.backPressed, gearVR.volumeUpPressed, gearVR.volumeDownPressed,
+                         gearVR.batteryLevel);
+        if (n > 0) {
+            if (Serial) Serial.write(dbg, n);
+            Serial0.write(dbg, n);  // always goes to UART0 (GPIO43)
         }
     }
     

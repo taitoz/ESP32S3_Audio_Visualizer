@@ -46,17 +46,20 @@ static NimBLERemoteCharacteristic* pBatteryChar = nullptr;
 static uint32_t lastConnectAttempt = 0;
 static uint32_t lastKeepAlive = 0;
 
-// === AIR MOUSE STATE (Accelerometer-based, tilt pointing) ===
-// Cursor is driven by accelerometer TILT while finger touches the pad.
-// On every touch-begin we snapshot current accel as the "zero reference",
-// then delta = current - offset drives cursor movement directly (no heavy filter).
+// === AIR MOUSE STATE (Gyroscope-based, angular rate pointing) ===
+// Cursor velocity is proportional to gyro angular rate. Gyro naturally outputs 0
+// at rest, so no per-touch recalibration needed. A slow-tracking bias subtracts
+// any static DC drift that accumulates when the sensor is stationary.
 
-// Per-touch offset (zero reference, snapshotted at rising edge of touch)
-static int16_t offsetAccelX = 0;
-static int16_t offsetAccelY = 0;
-static int16_t offsetAccelZ = 0;
+// Static gyro bias (drift compensation, slow exponential tracking while still)
+static float gyroBiasX = 0.0f;
+static float gyroBiasY = 0.0f;
+static float gyroBiasZ = 0.0f;
+static bool  gyroBiasPrimed = false;
+static uint16_t gyroBiasCount = 0;
+#define GYRO_BIAS_WARMUP_SAMPLES  30    // ~300ms averaging window at ~100Hz BLE rate
 
-// Light EMA (alpha = 0.8 → nearly pass-through, only kills single-sample noise)
+// Minimal EMA (alpha = 0.9 — kills single-sample sensor noise only)
 static float emaDeltaX = 0.0f;
 static float emaDeltaY = 0.0f;
 
@@ -64,10 +67,6 @@ static float emaDeltaY = 0.0f;
 static bool wasTouched = false;
 static uint16_t scrollLastY = 0;
 static bool scrollInit = false;
-
-// Zoned click state (latched at click press edge)
-static uint16_t clickZoneX = 0;
-static bool lastTouchpadClickEdge = false;
 
 // Scroll sub-pixel accumulator (cursor is direct pass-through, no remainders)
 static float scrollRemainder = 0.0f;
@@ -97,6 +96,9 @@ static void resetMouseState()
     emaDeltaX = 0.0f;
     emaDeltaY = 0.0f;
     scrollRemainder = 0.0f;
+    gyroBiasPrimed = false;   // re-prime bias on next connect
+    gyroBiasCount = 0;
+    gyroBiasX = gyroBiasY = gyroBiasZ = 0.0f;
 }
 
 // Notification callback for main data stream
@@ -173,24 +175,40 @@ static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, si
     
     gearVR.lastUpdateMs = now;
     
-    // === INSTANT ACCEL OFFSET SNAPSHOT (on touch-begin) ===
-    // At the moment finger lands on the pad, remember current accelerometer
-    // values as the "zero reference". From here, cursor reacts to TILT DELTA
-    // (current - offset) — so cursor always starts from the current orientation
-    // without any drift, calibration window, or heavy filtering.
-    if (fingerOnPad && !wasTouched) {
-        offsetAccelX = aX;
-        offsetAccelY = aY;
-        offsetAccelZ = aZ;
-        emaDeltaX = 0.0f;   // reset EMA history for clean start
-        emaDeltaY = 0.0f;
+    // === GYRO BIAS (static drift compensation, warmup-then-track) ===
+    // Phase 1 (warmup, first ~300ms): accumulate running average of gyro samples.
+    //          Cursor is FROZEN during this window (handleAirMouse checks primed).
+    // Phase 2 (run): slow EMA tracker that only updates when controller is still.
+    if (!gyroBiasPrimed) {
+        // Incremental running average: bias_n = bias_(n-1) + (sample - bias_(n-1)) / n
+        gyroBiasCount++;
+        float invN = 1.0f / (float)gyroBiasCount;
+        gyroBiasX += ((float)gX - gyroBiasX) * invN;
+        gyroBiasY += ((float)gY - gyroBiasY) * invN;
+        gyroBiasZ += ((float)gZ - gyroBiasZ) * invN;
+        if (gyroBiasCount >= GYRO_BIAS_WARMUP_SAMPLES) {
+            gyroBiasPrimed = true;
+            Serial.printf("[GYRO] Bias calibrated: X=%.1f Y=%.1f Z=%.1f (from %u samples)\n",
+                          gyroBiasX, gyroBiasY, gyroBiasZ, gyroBiasCount);
+        }
+    } else {
+        const float DRIFT_ALPHA = 0.002f;     // very slow — only adapts over seconds
+        const float STILL_LIMIT = 40.0f;      // "still" if |raw-bias| < 40 on all axes
+        float dcX = (float)gX - gyroBiasX;
+        float dcY = (float)gY - gyroBiasY;
+        float dcZ = (float)gZ - gyroBiasZ;
+        if (fabsf(dcX) < STILL_LIMIT && fabsf(dcY) < STILL_LIMIT && fabsf(dcZ) < STILL_LIMIT) {
+            gyroBiasX += DRIFT_ALPHA * dcX;
+            gyroBiasY += DRIFT_ALPHA * dcY;
+            gyroBiasZ += DRIFT_ALPHA * dcZ;
+        }
     }
     
-    // === ZONED CLICK: latch zone at CLICK press edge ===
-    if (touchpadBtn && !lastTouchpadClickEdge) {
-        clickZoneX = rawX;
+    // Reset EMA history on touch-begin (avoid stale leftovers from previous gesture)
+    if (fingerOnPad && !wasTouched) {
+        emaDeltaX = 0.0f;
+        emaDeltaY = 0.0f;
     }
-    lastTouchpadClickEdge = touchpadBtn;
     
     // === IMMEDIATE AIR MOUSE + SCROLL (zero latency, no hot-path Serial) ===
     handleAirMouse(fingerOnPad);
@@ -205,10 +223,10 @@ class ClientCallbacks : public NimBLEClientCallbacks {
         Serial.println("╚════════════════════════════════════════╝");
         Serial.printf("MAC: %s\n", GEARVR_MAC_ADDRESS);
         Serial.printf("RSSI: %d dBm\n", pClient->getRssi());
-        // Optimize BLE connection parameters for lowest latency (7.5ms - 15ms interval)
-        // This enables 60-100 Hz data rate from the controller
-        pClient->updateConnParams(6, 12, 0, 400);
-        Serial.println("[BLE] Connection params updated: interval 7.5-15ms, timeout 4000ms");
+        // Lowest-latency BLE parameters: interval 7.5ms - 11.25ms → ~100-133 Hz sample rate
+        // min=6 (6*1.25ms), max=9 (9*1.25ms), slaveLatency=0, supTimeout=400 (4s)
+        pClient->updateConnParams(6, 9, 0, 400);
+        Serial.println("[BLE] Conn params: 7.5-11.25ms interval (~100-133 Hz), 4s timeout");
         gearVR.connected = true;
     }
     
@@ -432,34 +450,32 @@ void gearvr_update()
  * USB HID Integration — Air Mouse + Touchpad Scroll + Consumer Control
  *
  * Input mapping:
- *   • Cursor       : Gyro (rotation) — active ONLY while finger touches pad
+ *   • Cursor       : Gyroscope angular rate (yaw=X, pitch=Y) with slow drift
+ *                    bias tracking. Active ONLY while finger touches the pad.
  *   • Scroll wheel : Touchpad vertical delta (ΔY while touched)
- *   • Touchpad click (left half, X<=512)  → Mouse LEFT click
- *   • Touchpad click (right half, X>512)  → Mouse RIGHT click
- *   • Trigger                             → Mouse LEFT click (dup for convenience)
- *   • Back button                         → Consumer AC_BACK (browser back)
- *   • Volume +                            → Consumer Volume Increment
- *   • Volume −                            → Consumer Volume Decrement
+ *   • Trigger              → Mouse LEFT click
+ *   • Touchpad physical click → Mouse LEFT click (duplicate of trigger)
+ *   • Home button          → Mouse RIGHT click
+ *   • Back button          → Consumer AC_BACK
+ *   • Volume +             → Consumer Volume Increment
+ *   • Volume −             → Consumer Volume Decrement
  ******************************************************************************/
 
-// Air Mouse configuration — accelerometer tilt pointing
-#define AIR_ACCEL_DEADZONE   150       // Ignore tilt delta below this (tremor)
-#define AIR_ACCEL_SENS       0.025f    // Tilt delta → cursor pixels per BLE frame
-#define AIR_MAX_DELTA        4000      // Clamp tilt delta (prevents runaway on fast flicks)
-#define AIR_EMA_ALPHA        0.8f      // Light EMA — 80% current sample, 20% history
-#define AIR_MOUSE_INVERT_X   true      // Flip if axis feels wrong
-#define AIR_MOUSE_INVERT_Y   false
+// Air Mouse configuration — GYROSCOPE angular-rate pointing
+// Cursor velocity = gyro rate × sensitivity. No acceleration curve, no soft zone —
+// gyro reads 0 at rest so deadzone can be minimal (just noise floor).
+#define AIR_GYRO_DEADZONE    2         // Ignore |rate - bias| below this (sensor noise floor)
+#define AIR_GYRO_SENS        0.04f     // Gyro rate → cursor pixels per BLE frame
+#define AIR_GYRO_MAX         4000      // Clamp extreme spikes (sensor glitch protection)
+#define AIR_EMA_ALPHA        0.90f     // Minimal EMA — 90% current, 10% history
+#define AIR_MOUSE_INVERT_X   true      // Flip if horizontal axis feels wrong
+#define AIR_MOUSE_INVERT_Y   false     // Flip if vertical axis feels wrong
 #define MOUSE_HID_MAX        127       // int8_t max per Mouse.move() call
 
 // Scroll configuration
 #define SCROLL_SENS          0.05f     // Touchpad Y delta → scroll units
 #define SCROLL_DEADZONE      3         // Ignore sub-pixel touchpad noise
 #define SCROLL_WRAP_THRESHOLD 500      // Reject coordinate glitches
-
-// Touchpad click zoning (X ∈ 0..1023)
-#define TOUCH_ZONE_LEFT      400       // X < 400  → LEFT click
-#define TOUCH_ZONE_RIGHT     600       // X > 600  → RIGHT click
-                                       // 400..600 → NO click (dead center)
 
 // Send mouse movement with int8_t overflow protection (split large deltas).
 static void sendMouseMove(int32_t dx, int32_t dy)
@@ -494,56 +510,58 @@ static void sendMouseMove(int32_t dx, int32_t dy)
     }
 }
 
-// === AIR MOUSE: Accelerometer-tilt pointing, gated by touch ===
-// Cursor moves ONLY while finger touches the pad. On touch-begin we snapshot
-// the current accel as the zero reference (offsetAccelX/Y), then feed the
-// delta DIRECTLY to Mouse.move() — no calibration window, no heavy EMA.
+// === AIR MOUSE: Gyroscope angular-rate pointing, gated by touch ===
+// Cursor velocity is directly proportional to gyro rate (minus static bias).
+// Gyro is zero at rest, so no per-touch recalibration needed — cursor
+// simply stops when hand stops. Axis mapping:
+//   gyroZ (yaw rate)   → mouse X  (wrist twist left/right)
+//   gyroY (pitch rate) → mouse Y  (wrist tilt up/down)
+//   gyroX (roll rate)  → ignored
 static void handleAirMouse(bool touched)
 {
-    if (!touched) {
-        // Finger released — freeze cursor, clear state
-        wasTouched = false;
+    // Freeze cursor while bias is still being calibrated (first ~300ms after connect).
+    // Without this, an uncalibrated bias would send the cursor off-screen instantly.
+    if (!gyroBiasPrimed) {
+        wasTouched = touched;
         emaDeltaX = 0.0f;
         emaDeltaY = 0.0f;
         return;
     }
     
-    // First touch frame — just arm the state (offset already snapshotted in notifyCallback)
-    if (!wasTouched) {
-        wasTouched = true;
+    if (!touched) {
+        wasTouched = false;
+        emaDeltaX = 0.0f;
+        emaDeltaY = 0.0f;
         return;
     }
+    if (!wasTouched) {
+        wasTouched = true;
+        return;   // skip first frame to let EMA settle
+    }
     
-    // Pull current accelerometer values from the struct (already-parsed this packet)
-    int16_t aX = gearVR.accelX;
-    int16_t aZ = gearVR.accelZ;
+    // Raw gyro minus tracked static bias → angular rate in sensor units
+    float rX = (float)gearVR.gyroZ - gyroBiasZ;   // mouse X  ← yaw
+    float rY = (float)gearVR.gyroY - gyroBiasY;   // mouse Y  ← pitch
     
-    // Accelerometer axis mapping for tilt pointing (derived from 4-direction test):
-    //   accel X axis → mouse X (left/right tilt)
-    //   accel Z axis → mouse Y (up/down tilt)
-    int16_t rawDx = (int16_t)(aX - offsetAccelX);
-    int16_t rawDy = (int16_t)(aZ - offsetAccelZ);
+    if (AIR_MOUSE_INVERT_X) rX = -rX;
+    if (AIR_MOUSE_INVERT_Y) rY = -rY;
     
-    if (AIR_MOUSE_INVERT_X) rawDx = -rawDx;
-    if (AIR_MOUSE_INVERT_Y) rawDy = -rawDy;
+    // Clamp extreme spikes (sensor glitches)
+    if (rX >  AIR_GYRO_MAX) rX =  AIR_GYRO_MAX;
+    if (rX < -AIR_GYRO_MAX) rX = -AIR_GYRO_MAX;
+    if (rY >  AIR_GYRO_MAX) rY =  AIR_GYRO_MAX;
+    if (rY < -AIR_GYRO_MAX) rY = -AIR_GYRO_MAX;
     
-    // Clamp extreme spikes (noisy sensor glitches) before deadzone check
-    if (rawDx >  AIR_MAX_DELTA) rawDx =  AIR_MAX_DELTA;
-    if (rawDx < -AIR_MAX_DELTA) rawDx = -AIR_MAX_DELTA;
-    if (rawDy >  AIR_MAX_DELTA) rawDy =  AIR_MAX_DELTA;
-    if (rawDy < -AIR_MAX_DELTA) rawDy = -AIR_MAX_DELTA;
+    // Minimal deadzone (just under sensor noise floor)
+    if (fabsf(rX) < AIR_GYRO_DEADZONE) rX = 0.0f;
+    if (fabsf(rY) < AIR_GYRO_DEADZONE) rY = 0.0f;
     
-    // Deadzone — ignore tiny tilts (hand tremor)
-    int16_t dzDx = (abs(rawDx) < AIR_ACCEL_DEADZONE) ? 0 : rawDx;
-    int16_t dzDy = (abs(rawDy) < AIR_ACCEL_DEADZONE) ? 0 : rawDy;
+    // Minimal EMA — kills only single-sample noise
+    emaDeltaX = AIR_EMA_ALPHA * rX + (1.0f - AIR_EMA_ALPHA) * emaDeltaX;
+    emaDeltaY = AIR_EMA_ALPHA * rY + (1.0f - AIR_EMA_ALPHA) * emaDeltaY;
     
-    // Light EMA (alpha=0.8 — nearly pass-through, just kills single-sample spikes)
-    emaDeltaX = AIR_EMA_ALPHA * (float)dzDx + (1.0f - AIR_EMA_ALPHA) * emaDeltaX;
-    emaDeltaY = AIR_EMA_ALPHA * (float)dzDy + (1.0f - AIR_EMA_ALPHA) * emaDeltaY;
-    
-    // Direct scale to mouse pixels (int16_t math, no heavy accumulators)
-    int16_t moveX = (int16_t)(emaDeltaX * AIR_ACCEL_SENS);
-    int16_t moveY = (int16_t)(emaDeltaY * AIR_ACCEL_SENS);
+    int16_t moveX = (int16_t)(emaDeltaX * AIR_GYRO_SENS);
+    int16_t moveY = (int16_t)(emaDeltaY * AIR_GYRO_SENS);
     
     if (moveX != 0 || moveY != 0) {
         sendMouseMove((int32_t)moveX, (int32_t)moveY);
@@ -596,51 +614,42 @@ static void handleScroll(uint16_t touchX, uint16_t touchY, bool touched)
 
 // === BUTTON + CONSUMER CONTROL HANDLER ===
 // Polled from loop() at ~100 Hz. Maps:
-//   • Trigger           → Mouse LEFT
-//   • Touchpad click    → Mouse LEFT (if X<=512) or RIGHT (if X>512) — resolved at press edge
-//   • Back              → Consumer AC_BACK (one-shot on press edge)
-//   • Volume +/-        → Consumer Volume Inc/Dec (one-shot on press edge)
+//   • Trigger + Touchpad click → Mouse LEFT
+//   • Home                     → Mouse RIGHT
+//   • Back                     → Consumer AC_BACK (edge-triggered)
+//   • Volume +/-               → Consumer Volume Inc/Dec (edge-triggered)
 void gearvr_update_mouse()
 {
     if (!gearVR.connected) return;
     
     uint32_t now = millis();
     
-    bool trigger   = gearVR.triggerPressed;
-    bool tpClick   = gearVR.touchpadClicked;
-    bool isTouched = gearVR.touchActive;
-    bool backBtn   = gearVR.backPressed;
-    bool volUp     = gearVR.volumeUpPressed;
-    bool volDn     = gearVR.volumeDownPressed;
+    bool trigger = gearVR.triggerPressed;
+    bool tpClick = gearVR.touchpadClicked;
+    bool homeBtn = gearVR.homePressed;
+    bool backBtn = gearVR.backPressed;
+    bool volUp   = gearVR.volumeUpPressed;
+    bool volDn   = gearVR.volumeDownPressed;
     
-    // --- Compute desired LEFT/RIGHT state ---
-    // Touchpad click ONLY registers when finger is actively on the pad AND in a
-    // valid zone (X<400 = LEFT, X>600 = RIGHT, 400..600 = dead / ignored).
-    // Trigger is independent and always maps to LEFT.
-    bool tpLeft  = tpClick && isTouched && (clickZoneX <  TOUCH_ZONE_LEFT);
-    bool tpRight = tpClick && isTouched && (clickZoneX >  TOUCH_ZONE_RIGHT);
-    bool wantLeft  = trigger || tpLeft;
-    bool wantRight = tpRight;
+    // --- Button mapping ---
+    //   Trigger OR Touchpad-click → LEFT mouse button
+    //   Home                      → RIGHT mouse button
+    //   Back                      → Consumer AC_BACK
+    //   Volume +/-                → Consumer Volume Inc/Dec
+    bool wantLeft  = trigger || tpClick;
+    bool wantRight = homeBtn;
     
-    // Hard safety: if finger is not on pad OR click bit is down, force-release
-    // any touchpad-zoned press to avoid stuck buttons (trigger still honored).
-    if (!isTouched || !tpClick) {
-        if (mouseLastLeft && !trigger) {
-            Mouse.release(MOUSE_LEFT);
-            mouseLastLeft = false;
-        }
-        if (mouseLastRight) {
-            Mouse.release(MOUSE_RIGHT);
-            mouseLastRight = false;
-        }
-    }
-    
-    // Debug on click edge (one-shot, not in hot path)
-    if (tpClick && !lastTouchpadClicked) {
-        const char* zone = (clickZoneX < TOUCH_ZONE_LEFT) ? "LEFT"
-                         : (clickZoneX > TOUCH_ZONE_RIGHT) ? "RIGHT" : "DEAD";
-        if (Serial) Serial.printf("[CLICK] X=%u zone=%s touch=%d\n", clickZoneX, zone, isTouched);
-    }
+    // Edge-triggered debug prints for all buttons (instant visual feedback)
+    static bool dbgLastTrig = false, dbgLastHome = false, dbgLastBack = false;
+    static bool dbgLastVolUp = false, dbgLastVolDn = false;
+    if (tpClick  && !lastTouchpadClicked) { if (Serial) Serial.println("[BTN] Touchpad → LEFT");  Serial0.println("[BTN] Touchpad → LEFT"); }
+    if (trigger  && !dbgLastTrig)         { if (Serial) Serial.println("[BTN] Trigger  → LEFT");  Serial0.println("[BTN] Trigger  → LEFT"); }
+    if (homeBtn  && !dbgLastHome)         { if (Serial) Serial.println("[BTN] Home     → RIGHT"); Serial0.println("[BTN] Home     → RIGHT"); }
+    if (backBtn  && !dbgLastBack)         { if (Serial) Serial.println("[BTN] Back     → AC_BACK"); Serial0.println("[BTN] Back     → AC_BACK"); }
+    if (volUp    && !dbgLastVolUp)        { if (Serial) Serial.println("[BTN] Vol+"); Serial0.println("[BTN] Vol+"); }
+    if (volDn    && !dbgLastVolDn)        { if (Serial) Serial.println("[BTN] Vol-"); Serial0.println("[BTN] Vol-"); }
+    dbgLastTrig = trigger; dbgLastHome = homeBtn; dbgLastBack = backBtn;
+    dbgLastVolUp = volUp; dbgLastVolDn = volDn;
     
     // --- LEFT click (debounced) ---
     if (wantLeft != mouseLastLeft) {
