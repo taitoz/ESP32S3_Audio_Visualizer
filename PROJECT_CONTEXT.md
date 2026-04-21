@@ -361,28 +361,32 @@ Mouse.begin();
 
 **Composite device**: USB CDC (Serial debug) + HID Mouse — simultaneous via TinyUSB. `Mouse.move/press/release` are no-ops if host isn't connected (non-blocking — BLE keeps working even without USB host).
 
-**Button mapping**:
+**Button mapping (current)**:
 
-| Gear VR | Mouse |
-|---------|-------|
-| Trigger | LEFT click |
-| Back | RIGHT click |
-| Home | MIDDLE click |
-| Touchpad click (bit 3) | — (not used, kept for future) |
-| Volume ± | — (TBD: scroll wheel) |
+| Gear VR input | Host action | HID class |
+|---|---|---|
+| Trigger (hold) | Air-mouse gate — cursor only moves while held | — |
+| Touchpad click, **L-zone** (x ≤ 160) | LEFT click | Mouse |
+| Touchpad click, **R-zone** (x >  160) | RIGHT click | Mouse |
+| Touchpad swipe (finger on pad, Y) | Scroll wheel | Mouse |
+| Touchpad swipe (finger on pad, X) | Horizontal pan | Mouse |
+| Home | MUTE (`0x00E2`) | Consumer |
+| Back | PLAY / PAUSE (`0x00CD`) | Consumer |
+| Volume + | Volume Increment (`0x00E9`) | Consumer |
+| Volume − | Volume Decrement (`0x00EA`) | Consumer |
 
-All three buttons use **50 ms debounce** via `lastLeftChange/lastRightChange/lastMiddleChange` millis timers in `gearvr_update_mouse()`.
+Touchpad X is reported as 10-bit but the HW produces an effective range of `0..~315`; the zone split therefore sits at `160`, not `512`. The zone is **latched at the rising edge of the click** so a drag mid-hold cannot flip the button. LEFT/RIGHT use **50 ms debounce** via `lastLeftChange/lastRightChange` millis timers.
 
-**Professional trackpad logic** (see Section 8 below for full detail):
-- Clean `static void handleMouse(int32_t x, int32_t y, bool touched)` function
-- `wasTouched` state machine — first touch frame only records `lastX/lastY`, no cursor movement (prevents startup jump)
-- `int32_t` delta calculation (prevents overflow)
-- Wrap-around protection: reject `|dx| > 500 \|\| |dy| > 500` (coordinate glitches)
-- Deadzone: ignore if both `|dx| < 3 && |dy| < 3`
-- Combined vector-length ballistics: `scale = 0.4 + velocity * 0.025`
-- Static `float remainderX/Y` for sub-pixel accumulation (anti-jitter at low speeds)
-- `sendMouseMove()` helper splits large deltas into `int8_t`-safe chunks (–127..127) to prevent wrap-around flick on fast swipes
-- `Mouse.move()` called **directly from BLE `notifyCallback`** for zero-latency — no polling delay
+**Additional Consumer usage codes defined** (not wired to buttons yet, reserved for future gestures / mappings): `SCAN_NEXT_TRACK` (0x00B5), `SCAN_PREV_TRACK` (0x00B6), `AC_BACK` (0x0224), `AC_FORWARD` (0x0225).
+
+**Air-mouse logic** (see Section 8 for full detail):
+- Cursor velocity = gyro angular rate × sensitivity (gyro is 0 at rest, so no per-touch recalibration)
+- **Bias calibration**: 100-sample warmup at connect (motion-gated — rejects windows where any gyro axis exceeds 150 u), plus slow accel-gated stillness EMA while running.
+- **HARD HID clamp**: `sendMouseMove()` clips total dx/dy to ±200 px per call, so a single sensor spike cannot flood the USB HID buffer pool (previously caused `Failed to allocate buffer` storms and silently dropped clicks).
+- **Sub-pixel accumulator clamp**: `remainderX/Y` capped at ±200 so spikes can't queue ghost motion for the next frames.
+- `truncf()`-based sub-pixel emission (smooth low-speed "oily" feel).
+- Hard-subtractive vector deadzone (tremor killed cleanly at the boundary).
+- `Mouse.move()` called **directly from BLE `notifyCallback`** for zero-latency — no polling delay.
 
 **Constraint**: USB CDC (Serial) and USB HID can coexist on ESP32-S3 native USB, but `USB CDC On Boot: Enabled` must remain set. The USB stack handles both CDC and HID as a composite device.
 
@@ -548,77 +552,88 @@ void bleHidTask(void *param) {
 
 ## 8. Mouse Ballistics — Current Tuning (Authoritative)
 
-All constants live at the top of the USB HID section in `gearvr_controller.cpp` (~line 400):
+The pointer is **gyroscope-driven** (angular-rate), not touchpad-delta-driven. Touchpad is reserved for scroll + clicks. All tuning constants live at the top of the USB HID section in `gearvr_controller.cpp` (~line 645):
 
 ```cpp
-#define MOUSE_DEADZONE 3              // Ignore raw deltas < 3 units (ADC noise)
-#define MOUSE_BASE_SENS 0.4f          // Base sensitivity (linear term)
-#define MOUSE_ACCEL_FACTOR 0.025f     // Quadratic acceleration coefficient
-#define MOUSE_WRAP_THRESHOLD 500      // Detect false coordinate jumps
-#define MOUSE_HID_MAX 127             // int8_t max for Mouse.move() per call
-#define MOUSE_INVERT_X false          // X not inverted
-#define MOUSE_INVERT_Y false          // Y not inverted (user-tuned; set true if up/down swapped)
+#define AIR_GYRO_DEADZONE    10       // Hard subtractive vector deadzone (tremor floor)
+#define AIR_GYRO_SENS        0.08f    // Base sensitivity (per-frame gain on emaDelta)
+#define AIR_GYRO_ACCEL_REF   700.0f   // Reference speed for quadratic acceleration onset
+#define AIR_GYRO_ACCEL       0.9f     // Quadratic boost factor above reference speed
+#define AIR_GYRO_MAX         4000     // Clamp extreme per-sample gyro spikes
+#define AIR_EMA_ALPHA        0.40f    // Per-frame low-pass (0.40 = keep 40% new, 60% old)
+#define AIR_MOUSE_INVERT_X   true     // Yaw → mouse-X sign
+#define AIR_MOUSE_INVERT_Y   true     // Pitch → mouse-Y sign
+#define MOUSE_HID_MAX        127      // int8_t max per Mouse.move() chunk
+#define MOUSE_MOVE_CLAMP     200      // Total per-call hard clamp (HID flood guard)
 ```
 
-### 8.1 `handleMouse()` Algorithm (per BLE packet)
+### 8.1 `handleAirMouse(bool touched)` algorithm (per BLE packet, `touched` = trigger held)
 
 ```
-1. If !touched → reset wasTouched, remainderX/Y, return
-2. If first touch frame (!wasTouched) → record lastX/Y, set wasTouched=true, return (no cursor move!)
-3. dx = x - lastX; dy = y - lastY           // int32_t to prevent overflow
-4. If |dx|>500 || |dy|>500 → wrap-around glitch, update lastX/Y, return
-5. If |dx|<3 && |dy|<3 → deadzone, return (don't update lastX/Y; allow accumulation)
-6. Apply MOUSE_INVERT_X/Y if set
-7. velocity = sqrt(dx² + dy²)
-8. scale = 0.4 + velocity * 0.025            // single combined scale → no "diamond" effect
-9. moveX = dx*scale + remainderX
-   moveY = dy*scale + remainderY
-10. finalDx/finalDy = (int32_t) moveX/Y
-    remainderX/Y = moveX/Y - finalDx/Dy      // keep fractional part (sub-pixel)
-11. sendMouseMove(finalDx, finalDy)          // chunks to ±127 per Mouse.move call
-12. lastX = x; lastY = y                     // update at end
+ 1. If BLE link dead OR bias not yet primed → zero all accumulators, return
+ 2. If !touched (trigger released) → zero all accumulators EVERY FRAME, return
+ 3. On first touched frame → seed accel LPF, zero EMA / remainders, record start time
+ 4. During first 150 ms after touch → keep LPF running but freeze cursor (settle jolt)
+ 5. If scroll-lock active (finger moving on pad) → freeze cursor
+ 6. rX = gyroZ - biasZ      // yaw   → mouse-X
+    rY = gyroX - biasX      // pitch → mouse-Y (note: Gear VR puts pitch on X-axis)
+ 7. Optional linear fusion with accel tilt (disabled by default, AIR_FUSION_ENABLE=0)
+ 8. Apply INVERT_X/Y, clamp to ±AIR_GYRO_MAX
+ 9. EMA: emaDelta = ALPHA*raw + (1-ALPHA)*emaDelta
+10. Hard subtractive vector deadzone:
+       mag = √(emaX² + emaY²)
+       mag < DZ  → zero both
+       mag ≥ DZ  → scale by (mag - DZ) / mag   (keeps diagonals straight, no step)
+11. Unified vector gain: gain = SENS * (1 + ACCEL * mag / ACCEL_REF)
+12. remainderX += emaX * gain ;  remainderY += emaY * gain
+13. **Clamp remainderX/Y to ±200**  (spike can't queue ghost motion for next frames)
+14. moveX = truncf(remainderX)  (toward-zero — no step at ±0.5 like roundf)
+15. remainderX -= moveX         (fractional part persists → sub-pixel "oily" glide)
+16. sendMouseMove(moveX, moveY)
 ```
 
 ### 8.2 `sendMouseMove(int32_t dx, int32_t dy)`
 
-Mouse.move() accepts **`int8_t` only (–127..127)**. A naive cast of large deltas causes wrap-around flick (cursor shoots backward). Implementation loops until both dx and dy drained, emitting ±127 clamps per iteration.
+Two-stage defence:
 
-### 8.3 Why each piece exists (common regressions)
+1. **Hard clamp**: `|dx|, |dy| ≤ MOUSE_MOVE_CLAMP (200)`. Without this, a single sensor spike (contolller bumped / re-init) could drive dx into the thousands, producing **hundreds of 127-px HID reports in one call** — which saturates the USB HID buffer pool so subsequent `Mouse.press/release` for **clicks** fail to enqueue (`Failed to allocate buffer, retrying`) and get silently dropped.
+2. **int8_t split**: loop emits chunks of ±127 until dx and dy are drained. `Mouse.move()` is an `int8_t` API — a naive cast of a >127 delta wraps negative and the cursor flicks backward.
+
+### 8.3 Why each piece exists (regression guard)
 
 | Symptom | Root cause | Fix anchor |
-|---------|-----------|------------|
-| Cursor jumps to corner on first touch | `lastX=0` initial → huge dx on first packet | `wasTouched` state machine (step 2) |
-| "Diamond grid" movement | int truncation of small scaled deltas | `remainderX/Y` accumulator |
-| Cursor flicks backward on fast swipe | int8_t overflow (delta > 127 wraps to negative) | `sendMouseMove` chunked loop |
-| Diagonals feel slower than axes | Per-axis scale was `base + \|dx\|*accel` (independent) | Combined `velocity = sqrt(dx²+dy²)` |
-| Cursor drifts when finger stationary | Sensor noise at sub-pixel deltas | `MOUSE_DEADZONE 3` |
-| Cursor flies when palm leaves pad edge | Coordinate wraps 1023→0 | `MOUSE_WRAP_THRESHOLD 500` |
-| Only covers 1/4 of FHD screen | Weak base sensitivity / accel | `BASE_SENS 0.4`, `ACCEL 0.025` (boosted) |
-| Stuttering/lag | Serial.printf in hot path blocks USB-CDC | All mouse debug gated to `millis() >= 500 ms` throttle, **after** `sendMouseMove` call |
-| Up is down (or vice versa) | Controller orientation vs screen | Toggle `MOUSE_INVERT_Y` |
+|---|---|---|
+| Clicks logged but never reach host | USB HID pool flooded by spike-driven Mouse.move storm | `MOUSE_MOVE_CLAMP` (§8.2) + `REMAINDER_CLAMP` (step 13) |
+| Cursor flies at rest right after connect | Warmup captured a motion sample into bias | Motion-gated warmup: any gyro axis > 150 u aborts and restarts the window |
+| Cursor drifts constantly in one direction | Stale accel bias (orientation changed since warmup) | Slow EMA accel bias while accelerometer sees stillness |
+| Cursor flicks on finger landing on pad | Hand jolt spikes gyro + accel | 150 ms freeze after touch-begin, LPF kept warm |
+| Cursor jitter on small hold | Tremor below deadzone | Hard-subtractive vector deadzone (step 10) |
+| Diagonals feel slower than axes | Per-axis independent gains | Unified vector gain using `√(x²+y²)` (step 11) |
+| Cursor flicks backward on fast swipe | int8_t overflow from single large Mouse.move | `sendMouseMove` chunked loop + hard clamp |
+| Up-is-down | Controller orientation vs screen | Toggle `AIR_MOUSE_INVERT_Y` |
+| Right click never triggers | Touchpad X threshold 512 is unreachable (HW range 0…315) | `TP_CLICK_RIGHT_ZONE_X = 160` |
 
 ### 8.4 Data flow
 
 ```
 Gear VR BLE notification (60 B, ~100 Hz)
       ↓
-notifyCallback()                                    ← runs in NimBLE host thread, Core 0
-  ├─ parse bytes 54-56 → rawX/rawY
-  ├─ parse byte 58 → buttons
+notifyCallback()                              ← NimBLE host thread, Core 0
+  ├─ parse bytes 4-21 → accel / gyro (int16 LE)
+  ├─ parse bytes 54-56 → touchpad X/Y
+  ├─ parse byte 58 → button bitfield
   ├─ update gearVR global struct
-  ├─ throttled debug print (every 500 ms)
-  └─ handleMouse(rawX, rawY, fingerOnPad)           ← SYNCHRONOUS — zero polling latency
-         ↓
-         sendMouseMove() → Mouse.move() (TinyUSB)
-         ↓
-         Host OS moves cursor
+  ├─ gyro / accel bias maintenance (warmup + stillness EMA)
+  ├─ handleScroll(rawX, rawY, fingerOnPad)   → Mouse.move(0,0, wheel, pan)
+  └─ handleAirMouse(trigger)                 → sendMouseMove() → Mouse.move()
 
-gearvr_update_mouse() [loop, 100 Hz]
-  └─ only handles BUTTON debounce now; movement is callback-driven
+gearvr_update_mouse() [loop, ~100 Hz]
+  ├─ touchpad click zone latch (L/R) → Mouse LEFT / RIGHT (debounced)
+  └─ Home / Back / Volume edges      → ConsumerControl press/release
 ```
 
 ---
 
-*Last updated: Phase 1 + 3 + 4 + 5 + 6 complete. Stereo ADC (GPIO3 L, GPIO4 R), ambient light auto-brightness, dual-core FreeRTOS, float FFT, dynamic DC removal, 2 VU styles, USB Serial + Web Serial settings UI with NVS persistence, **Gear VR BLE client with professional trackpad ballistics (power curve, remainder accumulator, int8_t safe Mouse.move, wrap-around protection)**. Next: Phase 2 (AK4493 SPI driver).*
+*Last updated: Phase 1 + 3 + 4 + 5 + 6 complete. Stereo ADC (GPIO3 L, GPIO4 R), ambient light auto-brightness, dual-core FreeRTOS, float FFT, dynamic DC removal, 2 VU styles, USB Serial + Web Serial settings UI with NVS persistence, **Gear VR BLE client with gyro-based air mouse (trigger-gated), touchpad-zone LEFT/RIGHT clicks, touchpad scroll + pan, and media-key Consumer Controls (Home=MUTE, Back=PLAY/PAUSE, Vol±)**. Next: Phase 2 (AK4493 SPI driver).*
 
 **Reminder for AI assistants**: see top-of-file warning — do NOT attempt to compile. Edit source only; user tests on real hardware.

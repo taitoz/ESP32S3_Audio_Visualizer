@@ -13,10 +13,10 @@ Combines real-time audio visualization, AKM AK4493 DAC control, and Samsung Gear
 |-------|-------------|--------|
 | **1** | Spectrum Analyzer + VU Meters + Touch Switching | **Done** |
 | **2** | AK4493 DAC SPI Driver + Settings UI | Planned |
-| **3** | BLE Gear VR Controller Client | Planned |
-| **4** | USB HID Mouse/Keyboard Output | Planned |
-| **5** | Multi-page Touch UI + NVS Settings | Planned |
-| **6** | Dual-core FreeRTOS Task Architecture | Planned |
+| **3** | BLE Gear VR Controller Client | **Done** |
+| **4** | USB HID Mouse + Consumer Control Output | **Done** |
+| **5** | Web Serial Settings UI + NVS | **Done** |
+| **6** | Dual-core FreeRTOS Task Architecture | **Done** |
 
 ---
 
@@ -29,6 +29,29 @@ Combines real-time audio visualization, AKM AK4493 DAC control, and Samsung Gear
 - **Dual-Core FreeRTOS** — Core 0: touch + serial + light sensor, Core 1: audio + FFT + display
 - **Web Serial UI** — real-time settings control via browser (band smoothing, peak hold, VU attack/release)
 - **Performance** — ~10 FPS for both modes, full-frame 640×180 QSPI push with software 90° rotation
+- **Samsung Gear VR Controller → USB HID** (Phase 3 + 4) — BLE (NimBLE central) + composite USB HID (Mouse + Consumer Control) bridge. See [Gear VR Controls](#gear-vr-controls) below.
+
+---
+
+## Gear VR Controls
+
+The Gear VR controller connects over BLE (hardcoded MAC) and emulates a USB composite device: **Mouse** + **Consumer Control** (media keys). The pointer is **gyroscope-driven** (angular rate → cursor velocity), not touchpad-delta-driven.
+
+| Gear VR input | Host action |
+|---|---|
+| **Trigger** (hold) | Air-mouse gate — cursor only moves while held |
+| **Touchpad click, L-zone** (x ≤ 160) | LEFT mouse click |
+| **Touchpad click, R-zone** (x >  160) | RIGHT mouse click |
+| **Touchpad swipe** (finger on pad, ΔY) | Scroll wheel |
+| **Touchpad swipe** (finger on pad, ΔX) | Horizontal pan |
+| **Home** | MUTE (media key) |
+| **Back** | PLAY / PAUSE (media key) |
+| **Volume +** | Volume Increment |
+| **Volume −** | Volume Decrement |
+
+Touchpad X is 10-bit but the HW only reports `0..~315`, so the L/R zone split sits at **160**. The zone is **latched on the click's rising edge** so a drag mid-hold cannot flip the button. Additional Consumer usage codes (`SCAN_NEXT_TRACK 0xB5`, `SCAN_PREV_TRACK 0xB6`, `AC_BACK 0x224`, `AC_FORWARD 0x225`) are defined but not wired to buttons yet — reserved for future gestures.
+
+See `PROJECT_CONTEXT.md` §8 for the full pointer-ballistics algorithm and regression-guard table.
 
 ---
 
@@ -68,10 +91,11 @@ GPIO42 (CS)   ───→ CSN  (chip select, active low)
 ```
 - SPI3_HOST (HSPI) at 1 MHz — completely separate bus from display QSPI (SPI2)
 
-### Gear VR Controller (Phase 3)
-- Connects via **BLE** (ESP32-S3 acts as BLE Central/Client)
-- Service UUID: `4f63756c-7573-2054-6563-686e6f6c6f67`
-- Provides: touchpad X/Y, trigger, back, home, volume buttons, gyro/accelerometer
+### Gear VR Controller (Phase 3 — Done)
+- Connects via **BLE** (ESP32-S3 acts as BLE Central/Client via NimBLE)
+- Service UUID: `4f63756c-7573-2054-6872-65656d6f7465` ("Oculus Three Remote")
+- 60-byte notification packet provides: 10-bit touchpad X/Y, trigger, home, back, touchpad-click, volume ± buttons, 3-axis accelerometer, 3-axis gyroscope, 3-axis magnetometer, battery %
+- Auto-reconnect every 15 s, 60-second data-timeout watchdog, keep-alive writes + battery-read pings
 
 ---
 
@@ -108,22 +132,11 @@ GPIO42 (CS)   ───→ CSN  (chip select, active low)
 |---------|-------|
 | Board | ESP32-S3-Dev |
 | USB CDC On Boot | Enabled |
-| USB Mode | Hardware CDC and JTAG |
+| USB Mode | USB-OTG CDC(TinyUSB) |
 | Flash Size | 16MB |
 | Partition Scheme | 16M Flash (3MB APP / 9.9MB FATFS) |
 | PSRAM | OPI PSRAM |
 | CPU Frequency | 240MHz |
-
----
-
-## Dependencies (Arduino Library Manager)
-
-| Library | Version | Purpose |
-|---------|---------|---------|
-| **TFT_eSPI** | 2.5.34+ | Sprite rendering (sprite-only mode) |
-| **arduinoFFT** | 2.x | FFT computation |
-| **ESP32 Arduino Core** | 3.x | Platform |
-| **NimBLE-Arduino** | — | BLE client (Phase 3, future) |
 
 ---
 

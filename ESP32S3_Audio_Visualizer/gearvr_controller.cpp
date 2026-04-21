@@ -13,7 +13,12 @@ extern USBHIDConsumerControl ConsumerControl;
 // HID Consumer Control usage codes (USB HID Usage Table, page 0x0C)
 #define HID_CC_VOLUME_INCREMENT  0x00E9
 #define HID_CC_VOLUME_DECREMENT  0x00EA
+#define HID_CC_MUTE              0x00E2
+#define HID_CC_PLAY_PAUSE        0x00CD
+#define HID_CC_SCAN_NEXT_TRACK   0x00B5   // MEDIA_NEXT
+#define HID_CC_SCAN_PREV_TRACK   0x00B6   // MEDIA_PREVIOUS
 #define HID_CC_AC_BACK           0x0224
+#define HID_CC_AC_FORWARD        0x0225
 
 /*******************************************************************************
  * Gear VR Controller - BLE Implementation
@@ -87,9 +92,10 @@ static bool  accelFilterPrimed = false;
 static float remainderX = 0.0f;
 static float remainderY = 0.0f;
 
-// Per-touch recalibration was REMOVED — see comment block in notifyCallback.
-// The warmup calibration + accel-gated stillness tracker are sufficient for
-// bias drift compensation on an angular-rate-based pointer.
+// Bias drift is handled by (a) one-shot warmup at connect and (b) an
+// accel-gated stillness EMA. No per-touch recalibration — gyro is an
+// ANGULAR-RATE sensor (0 at rest regardless of orientation), so there is
+// no "zero orientation" to redefine per touch.
 
 // Scroll-vs-mouse mutual exclusion: fast touchpad motion locks the air mouse
 // for a short time so scrolling doesn't fight with gyro cursor movement.
@@ -120,6 +126,7 @@ static bool mouseLastRight = false;
 static bool lastVolUp = false;
 static bool lastVolDown = false;
 static bool lastBack = false;
+static bool lastHome = false;
 static bool lastTouchpadClicked = false;
 static uint32_t lastLeftChange = 0;
 static uint32_t lastRightChange = 0;
@@ -134,6 +141,10 @@ static void resetMouseState()
 {
     if (mouseLastLeft)  { Mouse.release(MOUSE_LEFT);  mouseLastLeft = false; }
     if (mouseLastRight) { Mouse.release(MOUSE_RIGHT); mouseLastRight = false; }
+    if (lastBack || lastHome || lastVolUp || lastVolDown) {
+        ConsumerControl.release();
+        lastBack = lastHome = lastVolUp = lastVolDown = false;
+    }
     wasTouched = false;
     scrollInit = false;
     emaDeltaX = 0.0f;
@@ -309,26 +320,13 @@ static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, si
     prevAccelZ = aZ;
     accelPrimed = true;
     
-    // Reset EMA history on touch-begin (avoid stale leftovers from previous gesture)
-    // and trigger per-touch gyro recalibration — redefines "zero" at every new touch
-    // so users can rest their arm, re-grip, and start pointing from any orientation.
+    // Reset EMA history on touch-begin so stale leftovers from a previous
+    // gesture don't bleed into the first few frames of the new one.
     if (fingerOnPad && !wasTouched) {
         emaDeltaX = 0.0f;
         emaDeltaY = 0.0f;
         // remainderX/Y intentionally NOT reset (persist sub-pixel fractions)
     }
-    
-    // === PER-TOUCH RECALIBRATION: REMOVED ===
-    // Previously re-averaged gyro samples at every touch-press to redefine
-    // "zero". That was conceptually wrong: gyro measures ANGULAR RATE, which
-    // is zero at rest regardless of controller orientation — there is no
-    // "zero orientation" to recalibrate per touch. In practice the window
-    // absorbed whatever motion the user was making during touch-press and
-    // baked it into gyroBias; even with a 150-unit motion gate, sub-gate
-    // motion (~50-100 u) accumulated across a session into a large DC offset
-    // (observed: biasZ drifting +51 after a minute of use), which then broke
-    // cursor stability on aim. The permanent warmup calibration plus the
-    // accel-gated stillness tracker handle all real bias drift correctly.
     
     // === IMMEDIATE SCROLL + AIR MOUSE (order matters!) ===
     // handleScroll runs first: it may set scrollLockUntilMs if finger is
@@ -560,13 +558,29 @@ void gearvr_update()
         return;  // Skip keep-alive and timeout checks
     }
     
-    // === KEEP-ALIVE: Send command every 1 second ===
-    if (millis() - lastKeepAlive > 1000) {
+    // === KEEP-ALIVE 2.0 (anti-disconnect) ===
+    // (a) Command write every 5 s — nudges the command channel.
+    // (b) Battery-Level READ every 10 s — hits a DIFFERENT characteristic
+    //     on a DIFFERENT service. Reads force an ATT round-trip with a
+    //     response, which reliably yanks the controller's BLE stack out of
+    //     low-power mode when command-channel writes alone aren't enough.
+    if (millis() - lastKeepAlive > 5000) {
         if (pCommandChar != nullptr && pCommandChar->canWriteNoResponse()) {
             uint8_t keepAlive[] = {0x01, 0x00, 0x00};
             pCommandChar->writeValue(keepAlive, sizeof(keepAlive), false);
-            lastKeepAlive = millis();
         }
+        lastKeepAlive = millis();
+    }
+    
+    static uint32_t lastBatteryPing = 0;
+    if (millis() - lastBatteryPing > 10000) {
+        if (pBatteryChar != nullptr && pBatteryChar->canRead()) {
+            std::string v = pBatteryChar->readValue();
+            if (v.length() > 0) {
+                gearVR.batteryLevel = (uint8_t)v[0];
+            }
+        }
+        lastBatteryPing = millis();
     }
     
     // === WAKE ATTEMPT: No data for 4 s → re-send activation command ===
@@ -613,16 +627,18 @@ void gearvr_update()
 /*******************************************************************************
  * USB HID Integration — Air Mouse + Touchpad Scroll + Consumer Control
  *
- * Input mapping:
- *   • Cursor       : Gyroscope angular rate (yaw=X, pitch=Y) with slow drift
- *                    bias tracking. Active ONLY while finger touches the pad.
- *   • Scroll wheel : Touchpad vertical delta (ΔY while touched)
- *   • Trigger              → Mouse LEFT click
- *   • Touchpad physical click → Mouse LEFT click (duplicate of trigger)
- *   • Home button          → Mouse RIGHT click
- *   • Back button          → Consumer AC_BACK
- *   • Volume +             → Consumer Volume Increment
- *   • Volume −             → Consumer Volume Decrement
+ * Input mapping (current):
+ *   • Cursor          : Gyroscope angular rate (yaw=X, pitch=Y). Active
+ *                       ONLY while the Trigger is held.
+ *   • Scroll wheel    : Touchpad vertical delta (ΔY while finger on pad)
+ *   • Horizontal pan  : Touchpad horizontal delta (ΔX while finger on pad)
+ *   • Trigger             → Air-mouse gate (hold to point)
+ *   • Touchpad click L-zone (x ≤ 160) → Mouse LEFT click
+ *   • Touchpad click R-zone (x >  160) → Mouse RIGHT click
+ *   • Home button         → Consumer MUTE
+ *   • Back button         → Consumer PLAY_PAUSE
+ *   • Volume +            → Consumer Volume Increment
+ *   • Volume −            → Consumer Volume Decrement
  ******************************************************************************/
 
 // Air Mouse configuration — GYROSCOPE angular-rate pointing
@@ -693,8 +709,21 @@ void gearvr_update()
 #define SCROLL_WRAP_THRESHOLD 500      // Reject coordinate glitches
 
 // Send mouse movement with int8_t overflow protection (split large deltas).
+// === HARD CLAMP per call ===
+// Sensor spikes (controller slammed / re-init) can drive dx/dy into the
+// thousands. Without a clamp this fires dozens-to-hundreds of 127-px HID
+// reports in ONE call → saturates the USB HID buffer pool → future
+// Mouse.press()/release() calls for CLICKS silently fail to enqueue
+// ("Failed to allocate buffer, retrying"). Result: clicks are logged
+// but never reach the host. Cap the total move to a sane upper bound
+// so a single spike emits at most ceil(200/127)=2 HID reports.
+#define MOUSE_MOVE_CLAMP  200
 static void sendMouseMove(int32_t dx, int32_t dy)
 {
+    if (dx >  MOUSE_MOVE_CLAMP) dx =  MOUSE_MOVE_CLAMP;
+    if (dx < -MOUSE_MOVE_CLAMP) dx = -MOUSE_MOVE_CLAMP;
+    if (dy >  MOUSE_MOVE_CLAMP) dy =  MOUSE_MOVE_CLAMP;
+    if (dy < -MOUSE_MOVE_CLAMP) dy = -MOUSE_MOVE_CLAMP;
     while (dx != 0 || dy != 0) {
         int8_t stepX = 0;
         int8_t stepY = 0;
@@ -804,7 +833,7 @@ static void handleAirMouse(bool touched)
     
     // Raw gyro minus tracked static bias → angular rate in sensor units.
     // Bias is maintained elsewhere by: (a) 100-sample warmup at connect,
-    // (b) 30-frame per-touch recalibration, (c) accel-gated stillness tracker.
+    // (b) accel-gated stillness tracker (slow EMA while still).
     float rX = (float)gearVR.gyroZ - gyroBiasZ;   // mouse X  ← yaw   (rotation around gravity)
     float rY = (float)gearVR.gyroX - gyroBiasX;   // mouse Y  ← pitch (Gear VR puts pitch on X-axis)
     
@@ -880,17 +909,30 @@ static void handleAirMouse(bool touched)
     // Per-axis independent gains caused subtle direction skew at low rates,
     // which manifested as "diamond grid" staircasing.
     //
-    // Emission via roundf() (not truncation): rounds to nearest integer symmetrically
-    // for positive & negative, so pixel steps fire at every half-unit instead of
-    // only at full units → twice the step resolution, cleaner diagonals.
+    // === SUB-PIXEL VISCOUS EMISSION (truncation-toward-zero) ===
+    // Use truncf() instead of roundf() so a pixel is emitted ONLY when the
+    // accumulator reaches a full ±1.0. Example: at 0.4 px/frame the accumulator
+    // hits 1.2 on frame 3 → emit 1, keep 0.2. The result is a slow, steady drip
+    // (1 px every 2-3 frames) instead of roundf()'s twitchy every-other-frame
+    // step at half-pixel thresholds. The eye reads this as smooth "oily" motion.
+    // Large motions still emit instantly (truncf(5.7)=5, keep 0.7).
     float vmag = sqrtf(emaDeltaX * emaDeltaX + emaDeltaY * emaDeltaY);
     float gain = AIR_GYRO_SENS * (1.0f + AIR_GYRO_ACCEL * vmag / AIR_GYRO_ACCEL_REF);
     remainderX += emaDeltaX * gain;
     remainderY += emaDeltaY * gain;
     
-    int32_t moveX = (int32_t)roundf(remainderX);   // round to nearest (symmetric)
-    int32_t moveY = (int32_t)roundf(remainderY);
-    remainderX   -= (float)moveX;                   // keep fractional part
+    // Clamp accumulator so a single spike can't queue hundreds of pixels
+    // for the NEXT frames to "replay" as a ghost zoom. Anything above this
+    // cap is almost certainly spike, not intent.
+    const float REMAINDER_CLAMP = 200.0f;
+    if (remainderX >  REMAINDER_CLAMP) remainderX =  REMAINDER_CLAMP;
+    if (remainderX < -REMAINDER_CLAMP) remainderX = -REMAINDER_CLAMP;
+    if (remainderY >  REMAINDER_CLAMP) remainderY =  REMAINDER_CLAMP;
+    if (remainderY < -REMAINDER_CLAMP) remainderY = -REMAINDER_CLAMP;
+    
+    int32_t moveX = (int32_t)truncf(remainderX);   // toward-zero: 1.8→1, -1.8→-1
+    int32_t moveY = (int32_t)truncf(remainderY);
+    remainderX   -= (float)moveX;                   // fractional part survives
     remainderY   -= (float)moveY;
     
     if (moveX != 0 || moveY != 0) {
@@ -971,10 +1013,12 @@ static void handleScroll(uint16_t touchX, uint16_t touchY, bool touched)
 
 // === BUTTON + CONSUMER CONTROL HANDLER ===
 // Polled from loop() at ~100 Hz. Maps:
-//   • Trigger + Touchpad click → Mouse LEFT
-//   • Home                     → Mouse RIGHT
-//   • Back                     → Consumer AC_BACK (edge-triggered)
-//   • Volume +/-               → Consumer Volume Inc/Dec (edge-triggered)
+//   • Touchpad click L-zone → Mouse LEFT       (debounced)
+//   • Touchpad click R-zone → Mouse RIGHT      (debounced)
+//   • Trigger               → air-mouse gate   (handled in notifyCallback)
+//   • Home                  → Consumer MUTE        (edge-triggered)
+//   • Back                  → Consumer PLAY_PAUSE  (edge-triggered)
+//   • Volume +/-            → Consumer Volume Inc/Dec (edge-triggered)
 void gearvr_update_mouse()
 {
     // Double-check BLE state; release any held buttons if the link vanished
@@ -994,22 +1038,37 @@ void gearvr_update_mouse()
     bool volDn   = gearVR.volumeDownPressed;
     
     // --- Button mapping ---
-    //   Touchpad click → LEFT mouse button (trigger is reserved for air-mouse
-    //                    activation — hold trigger to point)
-    //   Home           → RIGHT mouse button
-    //   Back           → Consumer AC_BACK
-    //   Volume         → Consumer Volume Inc/Dec
-    bool wantLeft  = tpClick;
-    bool wantRight = homeBtn;
+    //   Touchpad click   → LEFT if finger on left/center half of pad,
+    //                      RIGHT if finger on right half   (zone latched at press edge)
+    //   Trigger          → air-mouse activation (handled in notifyCallback)
+    //   Home             → Consumer MUTE            (media key)
+    //   Back             → Consumer PLAY_PAUSE      (media key)
+    //   Volume           → Consumer Volume Inc/Dec  (media key)
+    //
+    // Touchpad X is reported as 10-bit but HW only produces 0..~315
+    // empirically (confirmed from live log: max seen = 313). Midpoint = 160.
+    // Latch the zone on the rising edge of tpClick so a drag after press
+    // can't flip the button mid-hold.
+    #define TP_CLICK_RIGHT_ZONE_X  160
+    static bool tpClickZoneRight = false;
+    if (tpClick && !lastTouchpadClicked) {
+        tpClickZoneRight = ((uint16_t)gearVR.touchX > TP_CLICK_RIGHT_ZONE_X);
+    }
+    bool wantLeft  = tpClick && !tpClickZoneRight;
+    bool wantRight = tpClick && tpClickZoneRight;
     (void)trigger;  // reused for air-mouse gating in notifyCallback
     
     // Edge-triggered debug prints for all buttons (instant visual feedback)
     static bool dbgLastTrig = false, dbgLastHome = false, dbgLastBack = false;
     static bool dbgLastVolUp = false, dbgLastVolDn = false;
-    if (tpClick  && !lastTouchpadClicked) { if (Serial) Serial.println("[BTN] Touchpad → LEFT"); Serial0.println("[BTN] Touchpad → LEFT"); }
+    if (tpClick  && !lastTouchpadClicked) {
+        const char *zs = tpClickZoneRight ? "[BTN] Touchpad R-zone → RIGHT" : "[BTN] Touchpad L-zone → LEFT";
+        if (Serial) Serial.printf("%s (x=%u)\n", zs, (unsigned)gearVR.touchX);
+        Serial0.printf("%s (x=%u)\n", zs, (unsigned)gearVR.touchX);
+    }
     if (trigger  && !dbgLastTrig)         { if (Serial) Serial.println("[BTN] Trigger → AIR MOUSE ON"); Serial0.println("[BTN] Trigger → AIR MOUSE ON"); }
-    if (homeBtn  && !dbgLastHome)         { if (Serial) Serial.println("[BTN] Home     → RIGHT"); Serial0.println("[BTN] Home     → RIGHT"); }
-    if (backBtn  && !dbgLastBack)         { if (Serial) Serial.println("[BTN] Back     → AC_BACK"); Serial0.println("[BTN] Back     → AC_BACK"); }
+    if (homeBtn  && !dbgLastHome)         { if (Serial) Serial.println("[BTN] Home     → MUTE"); Serial0.println("[BTN] Home     → MUTE"); }
+    if (backBtn  && !dbgLastBack)         { if (Serial) Serial.println("[BTN] Back     → PLAY/PAUSE"); Serial0.println("[BTN] Back     → PLAY/PAUSE"); }
     if (volUp    && !dbgLastVolUp)        { if (Serial) Serial.println("[BTN] Vol+"); Serial0.println("[BTN] Vol+"); }
     if (volDn    && !dbgLastVolDn)        { if (Serial) Serial.println("[BTN] Vol-"); Serial0.println("[BTN] Vol-"); }
     dbgLastTrig = trigger; dbgLastHome = homeBtn; dbgLastBack = backBtn;
@@ -1018,7 +1077,8 @@ void gearvr_update_mouse()
     // --- LEFT click (debounced) ---
     if (wantLeft != mouseLastLeft) {
         if (now - lastLeftChange >= BUTTON_DEBOUNCE_MS) {
-            if (wantLeft) Mouse.press(MOUSE_LEFT); else Mouse.release(MOUSE_LEFT);
+            if (wantLeft) { Mouse.press(MOUSE_LEFT);   Serial0.println("[HID] L+"); }
+            else          { Mouse.release(MOUSE_LEFT); Serial0.println("[HID] L-"); }
             mouseLastLeft = wantLeft;
             lastLeftChange = now;
         }
@@ -1027,18 +1087,26 @@ void gearvr_update_mouse()
     // --- RIGHT click (debounced) ---
     if (wantRight != mouseLastRight) {
         if (now - lastRightChange >= BUTTON_DEBOUNCE_MS) {
-            if (wantRight) Mouse.press(MOUSE_RIGHT); else Mouse.release(MOUSE_RIGHT);
+            if (wantRight) { Mouse.press(MOUSE_RIGHT);   Serial0.println("[HID] R+"); }
+            else           { Mouse.release(MOUSE_RIGHT); Serial0.println("[HID] R-"); }
             mouseLastRight = wantRight;
             lastRightChange = now;
         }
     }
     
     // --- Consumer Control: edge-triggered one-shot press/release ---
-    // Back button → AC_BACK (browser "back")
+    // Back button → MEDIA PLAY/PAUSE
     if (backBtn != lastBack) {
-        if (backBtn) ConsumerControl.press(HID_CC_AC_BACK);
-        else        ConsumerControl.release();
+        if (backBtn) ConsumerControl.press(HID_CC_PLAY_PAUSE);
+        else         ConsumerControl.release();
         lastBack = backBtn;
+    }
+    
+    // Home button → MEDIA MUTE
+    if (homeBtn != lastHome) {
+        if (homeBtn) ConsumerControl.press(HID_CC_MUTE);
+        else         ConsumerControl.release();
+        lastHome = homeBtn;
     }
     
     // Volume + / - (press and release mirror controller state)
