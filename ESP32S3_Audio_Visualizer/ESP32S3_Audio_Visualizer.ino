@@ -465,9 +465,10 @@ void loop()
         lastDebugMs = nowMs;
         char dbg[192];
         int n = snprintf(dbg, sizeof(dbg),
-                         "[DBG] touch=(%u,%u) active=%d accel=(%d,%d,%d) trig=%d tp=%d home=%d back=%d v+=%d v-=%d bat=%d%%\n",
+                         "[DBG] t=(%u,%u) a=%d acc=(%d,%d,%d) gyr=(%d,%d,%d) trg=%d tp=%d hm=%d bk=%d v+=%d v-=%d bat=%d%%\n",
                          gearVR.touchX, gearVR.touchY, gearVR.touchActive,
                          gearVR.accelX, gearVR.accelY, gearVR.accelZ,
+                         gearVR.gyroX,  gearVR.gyroY,  gearVR.gyroZ,
                          gearVR.triggerPressed, gearVR.touchpadClicked, gearVR.homePressed,
                          gearVR.backPressed, gearVR.volumeUpPressed, gearVR.volumeDownPressed,
                          gearVR.batteryLevel);

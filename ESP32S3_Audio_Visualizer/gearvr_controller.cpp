@@ -59,6 +59,14 @@ static bool  gyroBiasPrimed = false;
 static uint16_t gyroBiasCount = 0;
 #define GYRO_BIAS_WARMUP_SAMPLES  100   // ~1 s averaging window at ~100Hz BLE rate
 
+// Accelerometer bias (captured during SAME warmup window as gyro bias).
+// CRITICAL: without this, the non-zero gravity component on the "horizontal"
+// accel axes (e.g. ~447 on Y when held flat) feeds directly into the fusion
+// as a constant pull, causing the cursor to drift and fight upward motion.
+static float accelBiasX = 0.0f;
+static float accelBiasY = 0.0f;
+static float accelBiasZ = 0.0f;
+
 // Minimal EMA (alpha = 0.9 — kills single-sample sensor noise only)
 static float emaDeltaX = 0.0f;
 static float emaDeltaY = 0.0f;
@@ -136,6 +144,7 @@ static void resetMouseState()
     gyroBiasPrimed = false;   // re-prime bias on next connect
     gyroBiasCount = 0;
     gyroBiasX = gyroBiasY = gyroBiasZ = 0.0f;
+    accelBiasX = accelBiasY = accelBiasZ = 0.0f;
 }
 
 // Notification callback for main data stream
@@ -223,10 +232,19 @@ static void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, si
         gyroBiasX += ((float)gX - gyroBiasX) * invN;
         gyroBiasY += ((float)gY - gyroBiasY) * invN;
         gyroBiasZ += ((float)gZ - gyroBiasZ) * invN;
+        // Accelerometer bias captured in the SAME window — this becomes the
+        // "zero orientation" reference for the fusion term. Any later tilt
+        // contributes a non-zero accel delta that nudges the cursor; at rest
+        // the cursor receives zero accel contribution (no drift).
+        accelBiasX += ((float)aX - accelBiasX) * invN;
+        accelBiasY += ((float)aY - accelBiasY) * invN;
+        accelBiasZ += ((float)aZ - accelBiasZ) * invN;
         if (gyroBiasCount >= GYRO_BIAS_WARMUP_SAMPLES) {
             gyroBiasPrimed = true;
-            Serial.printf("[GYRO] Bias calibrated: X=%.1f Y=%.1f Z=%.1f (from %u samples)\n",
-                          gyroBiasX, gyroBiasY, gyroBiasZ, gyroBiasCount);
+            Serial.printf("[GYRO]  Bias: X=%.1f Y=%.1f Z=%.1f\n",
+                          gyroBiasX, gyroBiasY, gyroBiasZ);
+            Serial.printf("[ACCEL] Bias: X=%.1f Y=%.1f Z=%.1f (zero-orientation ref)\n",
+                          accelBiasX, accelBiasY, accelBiasZ);
         }
     }
     // === STILLNESS CALIBRATION (accelerometer-gated drift tracker) ===
@@ -307,7 +325,11 @@ class ClientCallbacks : public NimBLEClientCallbacks {
         // Lowest-latency BLE parameters: interval 7.5ms - 11.25ms → ~100-133 Hz sample rate
         // min=6 (6*1.25ms), max=9 (9*1.25ms), slaveLatency=0, supTimeout=400 (4s)
         pClient->updateConnParams(6, 9, 0, 400);
-        Serial.println("[BLE] Conn params: 7.5-11.25ms interval (~100-133 Hz), 4s timeout");
+        // Extend link-layer PDU to 251 bytes — lets one 60-byte IMU packet fit
+        // in a single LL frame (default is 27). MTU itself is preferred
+        // globally in gearvr_init() via NimBLEDevice::setMTU().
+        pClient->setDataLen(251);
+        Serial.println("[BLE] Conn params set (7.5-11.25ms, 4s timeout), LL PDU=251");
         gearVR.connected = true;
     }
     
@@ -326,6 +348,7 @@ void gearvr_init()
     // Initialize NimBLE
     NimBLEDevice::init("ESP32-S3-Visualizer");
     NimBLEDevice::setPower(ESP_PWR_LVL_P9);  // Max power for stable connection
+    NimBLEDevice::setMTU(517);               // ATT spec max — avoid packet fragmentation
     
     // Create client
     pClient = NimBLEDevice::createClient();
@@ -552,16 +575,24 @@ void gearvr_update()
 #define AIR_GYRO_MAX         4000      // Clamp extreme spikes (sensor glitch protection)
 #define AIR_EMA_ALPHA        0.55f     // Stronger smoothing — 55% current, 45% history (kills jitter)
 
-// === COMPLEMENTARY FILTER (sensor fusion) ===
-// Fuse gyro rate (fast, drifts) with accel-derived tilt signal (slow, stable).
-// finalRate = gyro*W_GYRO + (accel_as_tilt * ACCEL_SCALE) * W_ACCEL
-//   W_GYRO   = 0.95  →  gyroscope dominates (responsive)
-//   W_ACCEL  = 0.05  →  accelerometer gently nudges cursor away from drifted zero
-//   ACCEL_SCALE brings raw accel (~±16000 @ 1g) into gyro-rate units (~±2000)
-#define AIR_FUSION_ENABLE    1         // 0 = pure gyro, 1 = complementary filter
-#define AIR_FUSION_W_GYRO    0.95f
-#define AIR_FUSION_W_ACCEL   0.05f
-#define AIR_FUSION_ACCEL_SCALE  0.125f
+// === LINEAR FUSION (Oculus-style: 70% gyro + 30% accel tilt) ===
+// Gyro alone is aggressive and shows axis-aligned "diamond" artefacts on
+// diagonals. Blending in accel-derived tilt biases the cursor toward the
+// TRUE motion vector (accelerometer is immune to rotational bias), which
+// straightens diagonals and stops sudden corner-snaps on BLE stalls.
+//   targetX = gyroZ * W_GYRO + accel_tiltX * ACCEL_SCALE * W_ACCEL
+//   targetY = gyroY * W_GYRO + accel_tiltY * ACCEL_SCALE * W_ACCEL
+//   ACCEL_SCALE brings raw accel (~±16000 @ 1g) into gyro-rate units (~±500)
+#define AIR_FUSION_ENABLE       1         // 0 = pure gyro, 1 = linear fusion
+#define AIR_FUSION_W_GYRO       0.70f
+#define AIR_FUSION_W_ACCEL      0.30f
+#define AIR_FUSION_ACCEL_SCALE  0.04f     // brings raw accel (±16k) into gyro scale
+// Per-axis SIGN for accel contribution — gyro and accel often report OPPOSITE
+// signs for the same physical motion (e.g. pitch-up increases accelY but
+// gyroY is negative). If fusion "fights" gyro on one axis (hard to move in
+// one direction), flip that axis's sign.
+#define AIR_FUSION_ACCEL_X_SIGN  (+1.0f)
+#define AIR_FUSION_ACCEL_Y_SIGN  (-1.0f)  // flipped to match gyro pitch direction
 // Axis mapping: gyroZ (yaw)   → mouse X ;  gyroY (pitch) → mouse Y
 // If cursor flies UP when you tilt DOWN (or right when you turn left) → flip the corresponding INVERT.
 // Symptom guide:
@@ -618,21 +649,34 @@ static void sendMouseMove(int32_t dx, int32_t dy)
 //   gyroX (roll rate)  → ignored
 static void handleAirMouse(bool touched)
 {
-    // Freeze cursor while bias is still being calibrated (first ~300ms after connect).
+    // === INSTANT BRAKE: BLE disconnect safety ===
+    // If the BLE link is dead or the controller struct went stale, zero EVERY
+    // accumulator immediately. Without this, a disconnect mid-motion would
+    // leave non-zero remainders that fire as ghost movement on reconnect.
+    if (!gearVR.connected || !pClient || !pClient->isConnected()) {
+        wasTouched = false;
+        emaDeltaX = emaDeltaY = 0.0f;
+        remainderX = remainderY = 0.0f;
+        return;
+    }
+    
+    // Freeze cursor while bias is still being calibrated (first ~1 s after connect).
     // Without this, an uncalibrated bias would send the cursor off-screen instantly.
     if (!gyroBiasPrimed) {
         wasTouched = touched;
-        emaDeltaX = 0.0f;
-        emaDeltaY = 0.0f;
+        emaDeltaX = emaDeltaY = 0.0f;
+        remainderX = remainderY = 0.0f;   // keep accumulators clean during warmup
         return;
     }
     
     if (!touched) {
+        // === INSTANT BRAKE: finger released ===
+        // Force-zero EVERY accumulator so the cursor stops dead the instant the
+        // user lifts their finger — no residual sub-pixel motion, no "sticky"
+        // tail from a drifted EMA or remainder that fires later.
         wasTouched = false;
-        emaDeltaX = 0.0f;
-        emaDeltaY = 0.0f;
-        // NOTE: remainderX/Y NOT reset — persist sub-pixel fractions across
-        // touch sessions so no accumulated motion is ever lost.
+        emaDeltaX = emaDeltaY = 0.0f;
+        remainderX = remainderY = 0.0f;
         return;
     }
     if (!wasTouched) {
@@ -670,8 +714,12 @@ static void handleAirMouse(bool touched)
     // Axis mapping for Gear VR held horizontally, buttons up:
     //   accelX ≈ lateral tilt  (roll around pitch axis)  → nudges yaw  (mouse X)
     //   accelY ≈ forward tilt  (pitch around roll axis)  → nudges pitch (mouse Y)
-    float aTiltX = (float)gearVR.accelX * AIR_FUSION_ACCEL_SCALE;
-    float aTiltY = (float)gearVR.accelY * AIR_FUSION_ACCEL_SCALE;
+    // Subtract accel bias captured at warmup → at rest orientation this is 0,
+    // and only ACTUAL tilts (deviations from the zero orientation) contribute.
+    // Without this subtraction the ~447 DC offset on Y would pull the cursor
+    // down every frame regardless of user intent.
+    float aTiltX = ((float)gearVR.accelX - accelBiasX) * AIR_FUSION_ACCEL_SCALE * AIR_FUSION_ACCEL_X_SIGN;
+    float aTiltY = ((float)gearVR.accelY - accelBiasY) * AIR_FUSION_ACCEL_SCALE * AIR_FUSION_ACCEL_Y_SIGN;
     rX = rX * AIR_FUSION_W_GYRO + aTiltX * AIR_FUSION_W_ACCEL;
     rY = rY * AIR_FUSION_W_GYRO + aTiltY * AIR_FUSION_W_ACCEL;
 #endif
@@ -808,7 +856,12 @@ static void handleScroll(uint16_t touchX, uint16_t touchY, bool touched)
 //   • Volume +/-               → Consumer Volume Inc/Dec (edge-triggered)
 void gearvr_update_mouse()
 {
-    if (!gearVR.connected) return;
+    // Double-check BLE state; release any held buttons if the link vanished
+    if (!gearVR.connected || !pClient || !pClient->isConnected()) {
+        if (mouseLastLeft)  { Mouse.release(MOUSE_LEFT);  mouseLastLeft  = false; }
+        if (mouseLastRight) { Mouse.release(MOUSE_RIGHT); mouseLastRight = false; }
+        return;
+    }
     
     uint32_t now = millis();
     
