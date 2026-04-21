@@ -463,12 +463,18 @@ void loop()
     uint32_t nowMs = millis();
     if ((nowMs - lastDebugMs) >= 1000) {
         lastDebugMs = nowMs;
-        char dbg[192];
+        // Bias-corrected rates that actually feed the mouse — prints as
+        // mrt=(rX,rY). Handy for per-axis debugging via pivot-tests on a
+        // table (e.g. tip nose up/down → rY should swing; rotate flat → rX).
+        float mrtX = 0.0f, mrtY = 0.0f;
+        gearvr_get_mouse_rates(&mrtX, &mrtY);
+        char dbg[224];
         int n = snprintf(dbg, sizeof(dbg),
-                         "[DBG] t=(%u,%u) a=%d acc=(%d,%d,%d) gyr=(%d,%d,%d) trg=%d tp=%d hm=%d bk=%d v+=%d v-=%d bat=%d%%\n",
+                         "[DBG] t=(%u,%u) a=%d acc=(%d,%d,%d) gyr=(%d,%d,%d) mrt=(%+.0f,%+.0f) trg=%d tp=%d hm=%d bk=%d v+=%d v-=%d bat=%d%%\n",
                          gearVR.touchX, gearVR.touchY, gearVR.touchActive,
                          gearVR.accelX, gearVR.accelY, gearVR.accelZ,
                          gearVR.gyroX,  gearVR.gyroY,  gearVR.gyroZ,
+                         mrtX, mrtY,
                          gearVR.triggerPressed, gearVR.touchpadClicked, gearVR.homePressed,
                          gearVR.backPressed, gearVR.volumeUpPressed, gearVR.volumeDownPressed,
                          gearVR.batteryLevel);

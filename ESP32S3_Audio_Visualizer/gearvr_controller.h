@@ -58,3 +58,10 @@ void gearvr_update();  // Called periodically to process BLE events
 void gearvr_update_mouse();  // Call this in loop() to update USB HID Mouse
 void gearvr_get_mouse_delta(int16_t *dx, int16_t *dy);  // Get relative movement
 bool gearvr_get_mouse_buttons(bool *left, bool *right, bool *middle);  // Get button states
+
+// Diagnostic: returns bias-corrected gyro rates (same source as the mouse).
+//   *rX = gyroZ - biasZ   (drives mouse X — yaw)
+//   *rY = gyroX - biasX   (drives mouse Y — pitch, mapped to X-axis on Gear VR)
+// Used by the periodic [DBG] logger so you can see which physical motion
+// produces which mouse-axis signal, and spot asymmetry between up/down.
+void gearvr_get_mouse_rates(float *rX, float *rY);
