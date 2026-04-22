@@ -101,28 +101,80 @@ GPIO42 (CS)   ───→ CSN  (chip select, active low)
 
 ## Pin Map
 
-| GPIO | Function | Bus | Notes |
-|------|----------|-----|-------|
-| 3 | Audio ADC input | ADC1_CH2 | Via transformer + bias network |
-| 12 | Display CS | QSPI (SPI2) | |
-| 17 | Display SCK | QSPI (SPI2) | |
-| 13 | Display D0 | QSPI (SPI2) | |
-| 18 | Display D1 | QSPI (SPI2) | |
-| 21 | Display D2 / BTN2 | QSPI (SPI2) | Shared with button 2 |
-| 14 | Display D3 | QSPI (SPI2) | |
-| 16 | Display RST / Touch RST | — | Shared between display and touch |
-| 1 | Backlight (TFT_BL) | PWM capable | |
-| 15 | Touch SDA | I2C (Wire) | |
-| 10 | Touch SCL | I2C (Wire) | |
-| 11 | Touch INT | — | Active LOW on touch |
-| 0 | Button 1 (BOOT) | — | |
-| 4 | Light sensor | ADC1_CH3 | Ambient light for auto-brightness |
-| 8 | Battery voltage ADC | ADC | |
-| 39 | AK4493 SCK | SPI3 (HSPI) | Phase 2 |
-| 40 | AK4493 MOSI | SPI3 (HSPI) | Phase 2 |
-| 41 | AK4493 MISO | SPI3 (HSPI) | Phase 2 |
-| 42 | AK4493 CS | SPI3 (HSPI) | Phase 2 |
-| 19/20 | USB D-/D+ | USB-OTG | Native USB for HID (Phase 4) |
+Authoritative source: [`ESP32S3_Audio_Visualizer/pins_config.h`](ESP32S3_Audio_Visualizer/pins_config.h). Table below mirrors it.
+
+### Display (QSPI, SPI2_HOST, 32 MHz)
+
+| GPIO | Signal | Notes |
+|------|--------|-------|
+| 12 | `TFT_QSPI_CS`  | Chip select |
+| 17 | `TFT_QSPI_SCK` | QSPI clock |
+| 13 | `TFT_QSPI_D0`  | Data 0 |
+| 18 | `TFT_QSPI_D1`  | Data 1 |
+| 21 | `TFT_QSPI_D2`  | Data 2 — **shared with `PIN_BUTTON_2`** |
+| 14 | `TFT_QSPI_D3`  | Data 3 |
+| 16 | `TFT_QSPI_RST` | Display reset — **shared with `TOUCH_RES`** |
+|  1 | `TFT_BL`       | Backlight (PWM capable) |
+
+### Touch (capacitive, I2C @ 0x3B)
+
+| GPIO | Signal | Notes |
+|------|--------|-------|
+| 15 | `TOUCH_IICSDA` | I2C SDA (Wire) |
+| 10 | `TOUCH_IICSCL` | I2C SCL (Wire) |
+| 11 | `TOUCH_INT`    | Active-LOW touch interrupt (INPUT_PULLUP) |
+| 16 | `TOUCH_RES`    | Reset — shared with display RST |
+
+### Audio Input (stereo, ADC1)
+
+| GPIO | Signal | ADC channel | Notes |
+|------|--------|-------------|-------|
+| 3 | `AUDIO_ADC_PIN_L` | ADC1_CH2 | Left — transformer + 100 nF + 2×100 k bias |
+| 4 | `AUDIO_ADC_PIN_R` | ADC1_CH3 | Right — transformer + 100 nF + 2×100 k bias |
+
+### Ambient Light Sensor
+
+| GPIO | Signal | ADC channel | Notes |
+|------|--------|-------------|-------|
+| 5 | `LIGHT_SENSOR_PIN` | ADC1_CH4 | LDR voltage divider / phototransistor → auto-brightness |
+
+### Buttons & Battery
+
+| GPIO | Signal | Notes |
+|------|--------|-------|
+| 0 | `PIN_BUTTON_1` | BOOT button |
+| 21 | `PIN_BUTTON_2` | Shared with display `D2` |
+| 8 | `PIN_BAT_VOLT` | Battery voltage via on-board divider |
+
+### AK4493 DAC (SPI3_HOST / HSPI, 1 MHz) — Phase 2
+
+| GPIO | Signal | Notes |
+|------|--------|-------|
+| 39 | `AK4493_SPI_SCK`  | CCLK |
+| 40 | `AK4493_SPI_MOSI` | CDTI |
+| 41 | `AK4493_SPI_MISO` | CDTO (register readback) |
+| 42 | `AK4493_SPI_CS`   | CSN (active low) |
+| 38 | `DAC_RESET_PIN`   | AK4493 hardware reset (active low) |
+| 37 | `AMP_MUTE_RELAY_PIN` | MOSFET gate — amplifier power / mute relay |
+
+### RTC DS3231 (I2C1, 400 kHz, addr 0x68)
+
+| GPIO | Signal | Notes |
+|------|--------|-------|
+| 6 | `RTC_I2C_SDA` | Dedicated bus — not shared with touch |
+| 7 | `RTC_I2C_SCL` | |
+
+### USB (native OTG) — Composite CDC + HID
+
+| GPIO | Signal | Notes |
+|------|--------|-------|
+| 19 | USB D− | CDC Serial + HID Mouse + HID Consumer Control |
+| 20 | USB D+ | (same) |
+
+**Pin-sharing notes**:
+- `GPIO 16` serves **both** display reset and touch reset — pulses during `setup()` reset both chips simultaneously, which is intentional.
+- `GPIO 21` serves **both** display D2 (QSPI) and Button 2 — button reads will only work while QSPI traffic is idle; in this project Button 2 is not polled.
+- **ADC1 only** is used for Audio + Light — ADC2 on ESP32-S3 shares the radio subsystem with WiFi (BLE is unaffected, but keeping everything on ADC1 removes any doubt).
 
 ---
 

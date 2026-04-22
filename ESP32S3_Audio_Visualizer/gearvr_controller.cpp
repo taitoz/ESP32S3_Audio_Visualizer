@@ -50,6 +50,10 @@ static NimBLERemoteCharacteristic* pBatteryChar = nullptr;
 // Auto-reconnect state
 static uint32_t lastConnectAttempt = 0;
 static uint32_t lastKeepAlive = 0;
+#define RECONNECT_INTERVAL_MS  1000   // how often we attempt a direct-MAC reconnect
+                                      // while disconnected. Was 15000 — shortened so
+                                      // the controller is picked up within 1 s of
+                                      // coming back into range.
 
 // === AIR MOUSE STATE (Gyroscope-based, angular rate pointing) ===
 // Cursor velocity is proportional to gyro angular rate. Gyro naturally outputs 0
@@ -379,7 +383,9 @@ void gearvr_init()
     pClient = NimBLEDevice::createClient();
     pClient->setClientCallbacks(new ClientCallbacks());
     pClient->setConnectionParams(6, 12, 0, 400);  // Low latency: 7.5ms-15ms interval, 4s timeout
-    pClient->setConnectTimeout(5);
+    // 3 s connect timeout. Was 5 s — trimmed so a failed attempt (controller
+    // still out of range / asleep) unblocks the retry loop sooner.
+    pClient->setConnectTimeout(3);
     
     Serial.println("Gear VR Controller initialized. Call gearvr_connect() to connect.");
 }
@@ -391,124 +397,81 @@ void gearvr_connect()
         return;
     }
     
-    Serial.println("\n┌─────────────────────────────────────┐");
-    Serial.println("│ CONNECTING TO GEAR VR CONTROLLER   │");
-    Serial.println("└─────────────────────────────────────┘");
-    Serial.printf("Target MAC: %s\n", GEARVR_MAC_ADDRESS);
+    uint32_t tStart = millis();
+    Serial.printf("\n[BLE] Connecting to %s …\n", GEARVR_MAC_ADDRESS);
     Serial.flush();
-    
+
+    // Stop any in-flight scan before direct connect — some NimBLE builds refuse
+    // to open a connection while the scanner holds the LL. Cheap no-op if idle.
+    NimBLEScan* pScan = NimBLEDevice::getScan();
+    if (pScan && pScan->isScanning()) pScan->stop();
+
     NimBLEAddress address(std::string(GEARVR_MAC_ADDRESS), BLE_ADDR_PUBLIC);
-    
-    // Direct connection with extended timeout
     pClient->setConnectTimeout(15);
-    
+
     if (!pClient->connect(address, false)) {
-        Serial.println("✗ Connection failed");
+        Serial.println("[BLE] ✗ Connect failed");
         lastConnectAttempt = millis();
         return;
     }
-    
-    Serial.println("✓ BLE connected");
-    vTaskDelay(pdMS_TO_TICKS(500));  // Let connection stabilize
-    
-    // === STEP 1: DISCOVER ALL SERVICES ===
-    Serial.println("[BLE] Step 1: Discovering all services...");
-    auto services = pClient->getServices(true);  // true = force refresh
-    
-    if (services.empty()) {
-        Serial.println("✗ No services found!");
-        pClient->disconnect();
-        lastConnectAttempt = millis();
-        return;
-    }
-    
-    Serial.printf("[BLE] Found %d services:\n", services.size());
-    for (auto pSvc : services) {
-        Serial.printf("  - %s\n", pSvc->getUUID().toString().c_str());
-    }
-    
-    vTaskDelay(pdMS_TO_TICKS(500));
-    
-    // === STEP 2: READ BATTERY (wakes up controller) ===
-    Serial.println("[BLE] Step 2: Reading battery to wake controller...");
-    NimBLERemoteService* pBatteryService = pClient->getService(batteryServiceUUID);
-    if (pBatteryService != nullptr) {
-        pBatteryChar = pBatteryService->getCharacteristic(batteryLevelUUID);
-        if (pBatteryChar != nullptr && pBatteryChar->canRead()) {
-            std::string value = pBatteryChar->readValue();
-            if (value.length() > 0) {
-                gearVR.batteryLevel = (uint8_t)value[0];
-                Serial.printf("[BLE] Battery: %d%%\n", gearVR.batteryLevel);
-            }
-        }
-    }
-    vTaskDelay(pdMS_TO_TICKS(500));
-    
-    // === STEP 3: GET OCULUS SERVICE ===
-    Serial.println("[BLE] Step 3: Getting Oculus service...");
+
+    // === GET OCULUS SERVICE (cached GATT on reconnect) ===
+    // getService() without a forced full refresh reuses NimBLE's cached
+    // attribute table when one exists — dramatically faster on reconnect
+    // (no full ATT discovery round-trip). On first pairing the cache is
+    // empty and NimBLE falls back to discovery automatically.
     NimBLERemoteService* pService = pClient->getService(serviceUUID);
     if (pService == nullptr) {
-        Serial.println("✗ Oculus service not found!");
-        Serial.println("  → Controller must be in pairing mode");
-        Serial.println("  → Hold Home + Trigger for 5 seconds");
-        Serial.println("  → LED should blink multiple colors");
+        Serial.println("[BLE] ✗ Oculus service not found (hold Home+Trigger 5s to pair)");
         pClient->disconnect();
         lastConnectAttempt = millis();
         return;
     }
-    Serial.println("✓ Oculus service found");
-    
-    // === STEP 4: GET CHARACTERISTICS ===
-    Serial.println("[BLE] Step 4: Getting characteristics...");
-    pDataChar = pService->getCharacteristic(dataCharUUID);
+
+    pDataChar    = pService->getCharacteristic(dataCharUUID);
     pCommandChar = pService->getCharacteristic(commandCharUUID);
-    
     if (pDataChar == nullptr || pCommandChar == nullptr) {
-        Serial.println("✗ Characteristics not found!");
+        Serial.println("[BLE] ✗ Oculus characteristics not found");
         pClient->disconnect();
         lastConnectAttempt = millis();
         return;
     }
-    Serial.println("✓ Characteristics found");
-    
-    // === STEP 5: ENABLE NOTIFICATIONS ===
-    Serial.println("[BLE] Step 5: Enabling notifications...");
-    if (pDataChar->canNotify()) {
-        if (pDataChar->subscribe(true, notifyCallback)) {
-            Serial.println("✓ Notifications enabled");
-        } else {
-            Serial.println("✗ Failed to enable notifications");
+
+    // Battery service (also cached)
+    NimBLERemoteService* pBatteryService = pClient->getService(batteryServiceUUID);
+    if (pBatteryService) {
+        pBatteryChar = pBatteryService->getCharacteristic(batteryLevelUUID);
+        if (pBatteryChar && pBatteryChar->canRead()) {
+            std::string value = pBatteryChar->readValue();
+            if (value.length() > 0) gearVR.batteryLevel = (uint8_t)value[0];
         }
     }
-    vTaskDelay(pdMS_TO_TICKS(500));  // Critical delay
-    
-    // === STEP 6: AGGRESSIVE ACTIVATION SEQUENCE ===
-    Serial.println("[BLE] Step 6: Sending activation commands...");
-    
-    // Try 1: 3-byte command (no response)
+
+    // === ENABLE NOTIFICATIONS ===
+    if (pDataChar->canNotify()) {
+        if (!pDataChar->subscribe(true, notifyCallback)) {
+            Serial.println("[BLE] ✗ Failed to enable notifications");
+        }
+    }
+
+    // === ACTIVATION SEQUENCE ===
+    // Both writes are required; 50ms gap between them is enough for the
+    // controller firmware to process each. Was 200ms — trimmed for fast reconnect.
     if (pCommandChar->canWriteNoResponse()) {
         uint8_t cmd1[] = {0x01, 0x00, 0x00};
         pCommandChar->writeValue(cmd1, sizeof(cmd1), false);
-        Serial.println("[BLE] Sent: 01 00 00 (no response)");
-        vTaskDelay(pdMS_TO_TICKS(200));
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
-    
-    // Try 2: 2-byte command (with response)
     if (pCommandChar->canWrite()) {
         uint8_t cmd2[] = {0x01, 0x00};
-        if (pCommandChar->writeValue(cmd2, sizeof(cmd2), true)) {
-            Serial.println("[BLE] Sent: 01 00 (with response) ✓");
-        } else {
-            Serial.printf("[BLE] Write Error Code: %d\n", pClient->getLastError());
-        }
-        vTaskDelay(pdMS_TO_TICKS(200));
+        pCommandChar->writeValue(cmd2, sizeof(cmd2), true);
     }
-    
+
     gearVR.connected = true;
     lastKeepAlive = millis();
-    Serial.println("✓ Gear VR Controller ACTIVATED!");
-    Serial.println("  → Waiting for data packets...");
-    Serial.println("  → USB HID Mouse ready");
+    Serial.printf("[BLE] ✓ Gear VR activated in %lu ms (RSSI %d dBm, batt %d%%)\n",
+                  (unsigned long)(millis() - tStart),
+                  pClient->getRssi(), gearVR.batteryLevel);
 }
 
 void gearvr_disconnect()
@@ -545,14 +508,18 @@ void gearvr_update()
         // Mark as disconnected
         gearVR.connected = false;
         
-        // Trigger immediate reconnect
-        lastConnectAttempt = millis() - 16000;  // Force reconnect now
+        // Trigger immediate reconnect (offset must exceed RECONNECT_INTERVAL_MS)
+        lastConnectAttempt = millis() - 2000;  // Force reconnect now
     }
     
-    // === AUTO-RECONNECT: Try every 15 seconds if not connected ===
+    // === AUTO-RECONNECT: retry every 1 s while not connected ===
+    // Direct-MAC connect is cheap (no scan); a failed attempt blocks inside
+    // NimBLE for setConnectTimeout (3 s) when the controller is absent, so
+    // the effective retry cadence is ~3 s in that case. When the controller
+    // IS back in range we want the next retry to fire immediately — hence
+    // a 1 s gate instead of the old 15 s.
     if (!isConnected) {
-        if (millis() - lastConnectAttempt > 15000) {
-            Serial.println("[BLE] 🔍 Auto-reconnect: Starting scan...");
+        if (millis() - lastConnectAttempt > RECONNECT_INTERVAL_MS) {
             gearvr_connect();
         }
         return;  // Skip keep-alive and timeout checks
@@ -663,6 +630,16 @@ void gearvr_update()
                                        // smoothing — more responsiveness is preferable for
                                        // precision pointing. Each frame contributes 40%, so
                                        // the filter still removes single-sample noise spikes.
+
+// === MICRO-BOOST (anti-viscosity at movement onset) ===
+// Just above the deadzone the subtractive scaling and sub-pixel accumulator
+// together produce a tiny (<<1 px/frame) output, which *feels* like the
+// cursor is "stuck in honey" when the user starts a slow, deliberate motion.
+// Inverse-speed boost: at magnitudes below MICRO_REF, multiply gain by up to
+// (1 + MICRO_BOOST). Fades linearly to 1.0 at MICRO_REF, so it does NOT
+// interfere with the quadratic high-speed acceleration.
+#define AIR_GYRO_MICRO_REF    80.0f    // magnitude (post-EMA) below which boost applies
+#define AIR_GYRO_MICRO_BOOST  0.75f    // max extra gain at vmag → 0 (total = 1.75× SENS)
 
 // === LINEAR FUSION (Oculus-style: 70% gyro + 30% accel tilt) ===
 // Gyro alone is aggressive and shows axis-aligned "diamond" artefacts on
@@ -909,15 +886,24 @@ static void handleAirMouse(bool touched)
     // Per-axis independent gains caused subtle direction skew at low rates,
     // which manifested as "diamond grid" staircasing.
     //
+    // Gain curve (single scalar, applied to both axes):
+    //   gain = SENS · microBoost(vmag) · (1 + ACCEL · vmag / ACCEL_REF)
+    //   microBoost: inverse-speed (1..1+MICRO_BOOST), fades to 1 at MICRO_REF →
+    //               kills startup viscosity for slow, deliberate moves.
+    //   acceleration term: quadratic above ACCEL_REF → fast flicks cover screen.
+    //
     // === SUB-PIXEL VISCOUS EMISSION (truncation-toward-zero) ===
-    // Use truncf() instead of roundf() so a pixel is emitted ONLY when the
-    // accumulator reaches a full ±1.0. Example: at 0.4 px/frame the accumulator
-    // hits 1.2 on frame 3 → emit 1, keep 0.2. The result is a slow, steady drip
-    // (1 px every 2-3 frames) instead of roundf()'s twitchy every-other-frame
-    // step at half-pixel thresholds. The eye reads this as smooth "oily" motion.
-    // Large motions still emit instantly (truncf(5.7)=5, keep 0.7).
+    // truncf() (not roundf) emits a pixel ONLY when the accumulator reaches a
+    // full ±1.0. Example at 0.4 px/frame: accumulator hits 1.2 on frame 3 →
+    // emit 1, keep 0.2 — smooth steady drip instead of twitchy half-pixel steps.
     float vmag = sqrtf(emaDeltaX * emaDeltaX + emaDeltaY * emaDeltaY);
-    float gain = AIR_GYRO_SENS * (1.0f + AIR_GYRO_ACCEL * vmag / AIR_GYRO_ACCEL_REF);
+    float microBoost = 1.0f;
+    if (vmag < AIR_GYRO_MICRO_REF) {
+        float t = vmag / AIR_GYRO_MICRO_REF;                      // 0 … 1
+        microBoost = 1.0f + AIR_GYRO_MICRO_BOOST * (1.0f - t);    // 1+B … 1
+    }
+    float gain = AIR_GYRO_SENS * microBoost
+               * (1.0f + AIR_GYRO_ACCEL * vmag / AIR_GYRO_ACCEL_REF);
     remainderX += emaDeltaX * gain;
     remainderY += emaDeltaY * gain;
     
