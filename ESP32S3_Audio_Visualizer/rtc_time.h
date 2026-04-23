@@ -20,6 +20,7 @@ typedef struct {
     uint16_t year;     // e.g., 2026
     uint8_t dayOfWeek; // 0=Sunday, 6=Saturday
     bool valid;        // true if RTC is running and time is valid
+    float temperature; // DS3231 temperature in Celsius
 } RTCTime;
 
 extern volatile RTCTime currentTime;
@@ -30,3 +31,5 @@ void rtc_set_time(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uint8
 void rtc_update_time();  // Called by update_time_task
 bool rtc_is_running();
 float rtc_get_temperature();  // DS3231 has built-in temperature sensor
+void rtc_get_formatted_time(char *buf, size_t bufSize);  // "HH:MM:SS"
+void rtc_get_formatted_date(char *buf, size_t bufSize);  // "YYYY-MM-DD"

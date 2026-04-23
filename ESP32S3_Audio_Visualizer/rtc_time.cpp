@@ -6,19 +6,18 @@
  * RTC DS3231 Implementation
  ******************************************************************************/
 
-volatile RTCTime currentTime = {0, 0, 0, 1, 1, 2026, 0, false};
+volatile RTCTime currentTime = {0, 0, 0, 1, 1, 2026, 0, false, 0.0f};
 
 static RTC_DS3231 rtc;
-static TwoWire rtcWire = TwoWire(1);  // Use I2C1 for RTC (separate from touch I2C0)
 static bool rtcAvailable = false;     // Track if RTC is present
 
 void rtc_init()
 {
-    // Initialize I2C for RTC on dedicated bus
-    rtcWire.begin(RTC_I2C_SDA, RTC_I2C_SCL, RTC_I2C_FREQ);
-    Serial.printf("RTC I2C initialized: SDA=%d, SCL=%d\n", RTC_I2C_SDA, RTC_I2C_SCL);
+    // Use the shared main Wire bus (initialized with Qwiic pins 18/17 in setup()).
+    // Both the RTC and AK4493 DAC live on this bus.
+    Serial.printf("RTC using shared I2C bus: SDA=%d, SCL=%d\n", I2C_SDA, I2C_SCL);
     
-    if (!rtc.begin(&rtcWire)) {
+    if (!rtc.begin(&Wire)) {
         Serial.println("RTC DS3231 not found - continuing without RTC");
         currentTime.valid = false;
         rtcAvailable = false;
@@ -57,6 +56,7 @@ void rtc_update_time()
 {
     if (!rtcAvailable) {
         currentTime.valid = false;
+        currentTime.temperature = 0.0f;
         return;
     }
     
@@ -69,6 +69,7 @@ void rtc_update_time()
     currentTime.month = now.month();
     currentTime.year = now.year();
     currentTime.dayOfWeek = now.dayOfTheWeek();
+    currentTime.temperature = rtc.getTemperature();  // Read DS3231 temperature
     currentTime.valid = true;
 }
 
@@ -81,4 +82,28 @@ float rtc_get_temperature()
 {
     if (!rtcAvailable) return 0.0f;
     return rtc.getTemperature();
+}
+
+// Get formatted time string "HH:MM:SS" using DateTime structure
+void rtc_get_formatted_time(char *buf, size_t bufSize)
+{
+    if (!rtcAvailable || !currentTime.valid) {
+        snprintf(buf, bufSize, "00:00:00");
+        return;
+    }
+    
+    DateTime now = rtc.now();
+    snprintf(buf, bufSize, "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
+}
+
+// Get formatted date string "YYYY-MM-DD" using DateTime structure
+void rtc_get_formatted_date(char *buf, size_t bufSize)
+{
+    if (!rtcAvailable || !currentTime.valid) {
+        snprintf(buf, bufSize, "2026-01-01");  // Default date when RTC invalid
+        return;
+    }
+    
+    DateTime now = rtc.now();
+    snprintf(buf, bufSize, "%04d-%02d-%02d", now.year(), now.month(), now.day());
 }

@@ -146,9 +146,7 @@ button.small{padding:6px 12px;font-size:0.8em}
 <h2>Gear VR Controller</h2>
 <div class="row"><label>Status</label><span id="gearvrStatus" style="color:#f44336">Disconnected</span></div>
 <div class="row"><label>Battery</label><span id="gearvrBattery">--%</span></div>
-<div class="row"><label>Touchpad</label><span id="gearvrTouch">X:--- Y:---</span></div>
 <button id="gearvrConnectBtn" onclick="connectGearVR()" style="width:100%;margin-top:8px">&#127918; Connect Gear VR</button>
-<button id="gearvrDisconnectBtn" onclick="disconnectGearVR()" style="width:100%;margin-top:8px;display:none" class="danger">&#10005; Disconnect</button>
 <p style="font-size:0.75em;color:#666;margin-top:8px;text-align:center">MAC: 2C:BA:BA:2A:D4:05</p>
 </div>
 
@@ -416,14 +414,14 @@ function setRTCTime() {
 }
 
 function updateRTCDisplay(data) {
-    if (data.rtc_time) {
-        $('#rtcTime').textContent = data.rtc_time;
+    if (data.time) {
+        $('#rtcTime').textContent = data.time;  // "HH:MM:SS" formatted
     }
-    if (data.rtc_date) {
-        $('#rtcDate').textContent = data.rtc_date;
+    if (data.date) {
+        $('#rtcDate').textContent = data.date;  // "YYYY-MM-DD" formatted
     }
-    if (data.rtc_temp !== undefined) {
-        $('#rtcTemp').textContent = data.rtc_temp.toFixed(1) + '°C';
+    if (data.temp !== undefined) {
+        $('#rtcTemp').textContent = data.temp.toFixed(1) + '°C';
     }
 }
 
@@ -433,24 +431,15 @@ function connectGearVR() {
     log('Connecting to Gear VR Controller...');
 }
 
-function disconnectGearVR() {
-    sendCmd({cmd:'gearvr_disconnect'});
-    log('Disconnecting Gear VR Controller...');
-}
-
 function updateGearVRDisplay(data) {
     if (data.gearvr_connected !== undefined) {
         const connected = data.gearvr_connected;
         $('#gearvrStatus').textContent = connected ? 'Connected' : 'Disconnected';
         $('#gearvrStatus').style.color = connected ? '#4caf50' : '#f44336';
         $('#gearvrConnectBtn').style.display = connected ? 'none' : 'block';
-        $('#gearvrDisconnectBtn').style.display = connected ? 'block' : 'none';
     }
     if (data.gearvr_battery !== undefined) {
         $('#gearvrBattery').textContent = data.gearvr_battery + '%';
-    }
-    if (data.gearvr_touch_x !== undefined && data.gearvr_touch_y !== undefined) {
-        $('#gearvrTouch').textContent = `X:${data.gearvr_touch_x} Y:${data.gearvr_touch_y}`;
     }
 }
 

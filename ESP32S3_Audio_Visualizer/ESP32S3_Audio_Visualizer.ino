@@ -82,6 +82,8 @@ volatile bool bleDisconnectRequested = false;
 // ─── Touch Detection (with I2C timeout) ────────────────────────────────────
 bool checkTouch()
 {
+    // Touch controller shares the main `Wire` bus with the Qwiic peripherals
+    // (RTC @ 0x68, DAC @ 0x10). The bus is already initialized in setup().
     uint8_t buff[20] = {0};
     Wire.beginTransmission(ALS_ADDRESS);
     Wire.write(read_touchpad_cmd, 8);
@@ -291,18 +293,30 @@ void bleRtcTask(void *param)
 void setup()
 {
     Serial.begin(115200);
+    delay(1500);  // wait for USB CDC enumeration so boot log is visible
     
-    // ── Parallel UART0 debug (hardware serial on GPIO43/44) ──
-    // ALWAYS works regardless of USB stack / CDC / TinyUSB state.
-    // Connect a cheap USB-UART adapter (CP2102/CH340) to:
-    //   GPIO43 (U0TXD) → adapter RX
-    //   GPIO44 (U0RXD) → adapter TX  (optional, for input)
-    //   GND            → adapter GND
-    // Then: screen /dev/ttyUSB0 115200  (Ubuntu auto-creates the device)
-    Serial0.begin(115200);
-    Serial0.println("\n[UART] ESP32-S3 Audio Visualizer boot");
+    // NOTE: Parallel UART0 debug on GPIO 43/44 was removed — those pins are
+    // now occupied by the shared Qwiic I2C bus (DAC + RTC). Serial debug is
+    // available exclusively via USB CDC (the `Serial` object).
     
     Serial.println("ESP32-S3 Audio Visualizer starting...");
+    
+    // ── I2C bus init + diagnostic scan ──
+    // Single shared bus on GPIO 15/10 (SDA/SCL). Hosts the on-board AXS15231B
+    // touch controller plus anything connected externally via the Qwiic
+    // connector (DS3231 RTC, AK4493 DAC, …).
+    Wire.begin(I2C_SDA, I2C_SCL, I2C_FREQ);
+    Serial.printf("I2C (Wire @ SDA=%d SCL=%d) initialized\n", I2C_SDA, I2C_SCL);
+    Serial.print("I2C scan: ");
+    int i2cFound = 0;
+    for (byte addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            Serial.printf("0x%02X ", addr);
+            i2cFound++;
+        }
+    }
+    Serial.printf(" (%d device%s found)\n", i2cFound, i2cFound == 1 ? "" : "s");
     
     // Reconfigure watchdog: exclude IDLE tasks (NimBLE uses CPU 0 heavily)
     esp_task_wdt_deinit();
@@ -326,12 +340,28 @@ void setup()
     digitalWrite(TOUCH_RES, LOW);  delay(10);
     digitalWrite(TOUCH_RES, HIGH); delay(2);
     
-    Wire.begin(TOUCH_IICSDA, TOUCH_IICSCL);
-    Wire.setClock(400000);
-    
+    // Touch controller presence check on the shared `Wire` bus.
     Wire.beginTransmission(ALS_ADDRESS);
     int result = Wire.endTransmission();
-    Serial.printf("Touch I2C: %s\n", result == 0 ? "OK" : "FAIL");
+    Serial.printf("Touch controller @ 0x%02X: %s\n",
+                  ALS_ADDRESS, result == 0 ? "OK" : "FAIL");
+
+    // ── AK4493 DAC hardware reset ──
+    // Drive RESET low for 100 ms, then high — required before any I2C config.
+    // The DAC will lock to the Amanero (external I2S master) once MCLK is present.
+    pinMode(DAC_RESET_PIN, OUTPUT);
+    digitalWrite(DAC_RESET_PIN, LOW);
+    delay(100);
+    digitalWrite(DAC_RESET_PIN, HIGH);
+    delay(10);   // post-reset settle
+    Serial.printf("AK4493 reset pulse complete (pin GPIO%d)\n", DAC_RESET_PIN);
+    // TODO: add ak4493_init_i2c() call here once the AKM driver is integrated.
+    // The DAC must be configured as I2S SLAVE (external master = Amanero).
+    // Example registers (AK4493 datasheet):
+    //   0x00: PW1/PW2 = 1 (power up)
+    //   0x01: SLAVE mode, PCM 32-bit, I2S format
+    //   0x02: BICK/LRCK edge, de-emphasis
+    //   0x0B/0x0C: Lch/Rch digital volume
 
     // ── Settings (NVS) ──
     settings_init();

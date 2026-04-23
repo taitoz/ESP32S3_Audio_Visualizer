@@ -63,7 +63,8 @@ See `PROJECT_CONTEXT.md` §8 for the full pointer-ballistics algorithm and regre
 - **Flash**: 16 MB
 - **PSRAM**: 8 MB OPI
 - **Display**: 640x180 QSPI (AXS15231B controller), software 90-degree rotation for landscape
-- **Touch**: Capacitive, I2C @ address 0x3B (SDA=GPIO15, SCL=GPIO10, INT=GPIO11, RST=GPIO16)
+- **Shared I2C bus (`Wire`, 400 kHz)** on **GPIO 15 (SDA) / GPIO 10 (SCL)** — hosts the on-board AXS15231B touch controller (addr 0x3B) AND everything plugged into the Qwiic connector (DS3231 RTC @ 0x68, AK4493 DAC @ 0x10, …). Verified by bootup I2C scanner.
+- **Audio path**: external **Amanero USB-I2S** board drives the AK4493 directly (ESP32 does *not* generate I2S output)
 - **USB**: Native USB-OTG (USB CDC + USB HID capable)
 
 ### Audio Input Circuit
@@ -80,16 +81,24 @@ Audio Source ───[ ]───┤ Primary  Secondary ├───[ 100nF ]�
 - **2x 100k resistors**: bias network sets DC midpoint at ~1.65V (center of ADC range)
 - **ADC**: 12-bit, 0–3.3V range (ADC_ATTEN_DB_11), sampled at 22050 Hz
 
-### AK4493 DAC Connection (Phase 2)
+### AK4493 DAC Connection (Phase 2 — I2C control, external I2S master)
 ```
-ESP32-S3           AK4493
-────────           ──────
-GPIO39 (SCK)  ───→ CCLK
-GPIO40 (MOSI) ───→ CDTI (serial data in)
-GPIO41 (MISO) ←─── CDTO (serial data out / readback)
-GPIO42 (CS)   ───→ CSN  (chip select, active low)
+ESP32-S3                        AK4493
+────────                        ──────
+GPIO 15 (Wire SDA)   ────────→  SDA   (I2C control, addr 0x10)
+GPIO 10 (Wire SCL)   ────────→  SCL
+GPIO  5 (DAC_RESET)  ────────→  PDN   (active LOW hardware reset)
+
+Amanero USB-I2S board            AK4493
+────────────────────            ──────
+MCLK                 ────────→  MCLK
+BCK                  ────────→  BICK
+LRCK                 ────────→  LRCK
+DATA                 ────────→  SDATA
 ```
-- SPI3_HOST (HSPI) at 1 MHz — completely separate bus from display QSPI (SPI2)
+- **Control** over I2C at 400 kHz on the Qwiic connector (shared with RTC)
+- **Audio** clocks/data come from the external Amanero board — the AK4493 runs as I2S **slave**, ESP32 plays no part in the audio data path
+- **Reset sequence** on boot: `pinMode(5, OUTPUT); digitalWrite(5, LOW); delay(100); digitalWrite(5, HIGH);` then I2C register init
 
 ### Gear VR Controller (Phase 3 — Done)
 - Connects via **BLE** (ESP32-S3 acts as BLE Central/Client via NimBLE)
@@ -116,14 +125,27 @@ Authoritative source: [`ESP32S3_Audio_Visualizer/pins_config.h`](ESP32S3_Audio_V
 | 16 | `TFT_QSPI_RST` | Display reset — **shared with `TOUCH_RES`** |
 |  1 | `TFT_BL`       | Backlight (PWM capable) |
 
-### Touch (capacitive, I2C @ 0x3B)
+### Shared I2C Bus (`Wire`, 400 kHz) — touch + Qwiic peripherals
 
-| GPIO | Signal | Notes |
-|------|--------|-------|
-| 15 | `TOUCH_IICSDA` | I2C SDA (Wire) |
-| 10 | `TOUCH_IICSCL` | I2C SCL (Wire) |
-| 11 | `TOUCH_INT`    | Active-LOW touch interrupt (INPUT_PULLUP) |
-| 16 | `TOUCH_RES`    | Reset — shared with display RST |
+The on-board AXS15231B touch controller and the external Qwiic connector are
+wired to the **same** I2C bus on GPIO 15/10. Detected by the boot-time scanner
+and confirmed on hardware.
+
+| GPIO | Signal  | Notes |
+|------|---------|-------|
+| 15 | `I2C_SDA` / `TOUCH_IICSDA` | Shared data line |
+| 10 | `I2C_SCL` / `TOUCH_IICSCL` | Shared clock line |
+| 11 | `TOUCH_INT` | Active-LOW touch interrupt (INPUT_PULLUP) |
+| 16 | `TOUCH_RES` | Touch reset — shared with display RST |
+
+**Known I2C addresses on this bus:**
+
+| Address | Device | Source |
+|---------|--------|--------|
+| `0x3B` | AXS15231B touch controller | on-board |
+| `0x10` | AK4493 DAC (control) | external — via Qwiic |
+| `0x68` | DS3231 RTC | external — via Qwiic |
+| `0x6A` | DS3231 temperature alias / AT24C32 EEPROM (same breakout) | external |
 
 ### Audio Input (stereo, ADC1)
 
@@ -136,7 +158,7 @@ Authoritative source: [`ESP32S3_Audio_Visualizer/pins_config.h`](ESP32S3_Audio_V
 
 | GPIO | Signal | ADC channel | Notes |
 |------|--------|-------------|-------|
-| 5 | `LIGHT_SENSOR_PIN` | ADC1_CH4 | LDR voltage divider / phototransistor → auto-brightness |
+| 9 | `LIGHT_SENSOR_PIN` | ADC1_CH8 | LDR voltage divider / phototransistor → auto-brightness on `TFT_BL` (GPIO 1) via `analogWrite` / LEDC PWM |
 
 ### Buttons & Battery
 
@@ -146,23 +168,23 @@ Authoritative source: [`ESP32S3_Audio_Visualizer/pins_config.h`](ESP32S3_Audio_V
 | 21 | `PIN_BUTTON_2` | Shared with display `D2` |
 | 8 | `PIN_BAT_VOLT` | Battery voltage via on-board divider |
 
-### AK4493 DAC (SPI3_HOST / HSPI, 1 MHz) — Phase 2
+### AK4493 DAC (I2C control @ 0x10 on shared bus) — Phase 2
 
 | GPIO | Signal | Notes |
 |------|--------|-------|
-| 39 | `AK4493_SPI_SCK`  | CCLK |
-| 40 | `AK4493_SPI_MOSI` | CDTI |
-| 41 | `AK4493_SPI_MISO` | CDTO (register readback) |
-| 42 | `AK4493_SPI_CS`   | CSN (active low) |
-| 38 | `DAC_RESET_PIN`   | AK4493 hardware reset (active low) |
+| 15 | `I2C_SDA` | Shared with touch + RTC |
+| 10 | `I2C_SCL` | Shared with touch + RTC |
+|  5 | `DAC_RESET_PIN` | AK4493 hardware reset (active LOW) |
 | 37 | `AMP_MUTE_RELAY_PIN` | MOSFET gate — amplifier power / mute relay |
 
-### RTC DS3231 (I2C1, 400 kHz, addr 0x68)
+I2S audio lines (MCLK/BICK/LRCK/SDATA) are driven **directly by the Amanero USB-I2S board** — no ESP32 I2S peripheral is used.
+
+### RTC DS3231 (shared I2C, 400 kHz, addr 0x68)
 
 | GPIO | Signal | Notes |
 |------|--------|-------|
-| 6 | `RTC_I2C_SDA` | Dedicated bus — not shared with touch |
-| 7 | `RTC_I2C_SCL` | |
+| 15 | `I2C_SDA` | Shared with touch + DAC on `Wire` |
+| 10 | `I2C_SCL` | Shared with touch + DAC on `Wire` |
 
 ### USB (native OTG) — Composite CDC + HID
 
@@ -174,7 +196,10 @@ Authoritative source: [`ESP32S3_Audio_Visualizer/pins_config.h`](ESP32S3_Audio_V
 **Pin-sharing notes**:
 - `GPIO 16` serves **both** display reset and touch reset — pulses during `setup()` reset both chips simultaneously, which is intentional.
 - `GPIO 21` serves **both** display D2 (QSPI) and Button 2 — button reads will only work while QSPI traffic is idle; in this project Button 2 is not polled.
-- **ADC1 only** is used for Audio + Light — ADC2 on ESP32-S3 shares the radio subsystem with WiFi (BLE is unaffected, but keeping everything on ADC1 removes any doubt).
+- **ADC1 only** is used for Audio + Light (channels 2, 3, 8) — ADC2 on ESP32-S3 shares the radio subsystem with WiFi (BLE is unaffected, but keeping everything on ADC1 removes any doubt).
+- **Single I2C bus on GPIO 15/10** (`Wire`) — the on-board touch controller AND the external Qwiic connector share the same SDA/SCL lines. This was discovered empirically by the boot-time I2C scanner (see `setup()` in the main `.ino`).
+- **GPIO 17 and 18** are internally wired to the QSPI display (`TFT_QSPI_SCK`, `TFT_QSPI_D1`) and **are not broken out** on this board — they cannot be used for external peripherals.
+- **UART0 is disabled** in this project: `Serial` is USB CDC. Any residual `Serial0.print*` calls in legacy code are silent no-ops (UART driver never started).
 
 ---
 

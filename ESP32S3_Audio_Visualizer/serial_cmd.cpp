@@ -64,10 +64,13 @@ static void send_status()
     doc["free_heap"]       = ESP.getFreeHeap();
     doc["uptime"]          = millis();
     
-    // RTC status
-    doc["rtc_time"]        = currentTime.hour * 10000 + currentTime.minute * 100 + currentTime.second;
-    doc["rtc_date"]        = currentTime.year * 10000 + currentTime.month * 100 + currentTime.day;
-    // doc["rtc_temp"]     = rtc_get_temperature();  // DISABLED - blocks I2C, causes watchdog
+    // RTC status - use formatted strings
+    char timeBuf[9], dateBuf[11];
+    rtc_get_formatted_time(timeBuf, sizeof(timeBuf));
+    rtc_get_formatted_date(dateBuf, sizeof(dateBuf));
+    doc["time"]            = timeBuf;  // "HH:MM:SS"
+    doc["date"]            = dateBuf;  // "YYYY-MM-DD"
+    doc["temp"]            = currentTime.valid ? currentTime.temperature : 0.0f;  // RTC temperature in Celsius
     doc["rtc_valid"]       = currentTime.valid;
     
     // Gear VR status

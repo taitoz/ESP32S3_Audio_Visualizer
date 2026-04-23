@@ -54,8 +54,8 @@ void audio_sampling_init()
     };
     adc_oneshot_config_channel(audio_adc_handle, AUDIO_ADC_CHANNEL_L, &chan_cfg);
     adc_oneshot_config_channel(audio_adc_handle, AUDIO_ADC_CHANNEL_R, &chan_cfg);
-    // Also configure light sensor channel (GPIO5 = ADC1_CH4)
-    adc_oneshot_config_channel(audio_adc_handle, ADC_CHANNEL_4, &chan_cfg);
+    // Also configure light sensor channel (GPIO9 = ADC1_CH8)
+    adc_oneshot_config_channel(audio_adc_handle, LIGHT_SENSOR_CHANNEL, &chan_cfg);
 
     // Start periodic timer for sampling
     const esp_timer_create_args_t timer_args = {
@@ -145,10 +145,10 @@ float audio_get_peak(int ch)
 
 int audio_read_light_sensor()
 {
-    // Read light sensor using shared ADC1 handle (GPIO5 = ADC1_CH4)
+    // Read light sensor using shared ADC1 handle (GPIO9 = ADC1_CH8)
     if (!audio_adc_handle) return 0;
     
     int raw = 0;
-    adc_oneshot_read(audio_adc_handle, ADC_CHANNEL_4, &raw);
+    adc_oneshot_read(audio_adc_handle, LIGHT_SENSOR_CHANNEL, &raw);
     return raw;  // 0-4095
 }

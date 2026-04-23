@@ -26,8 +26,10 @@
 #define PIN_BUTTON_2           21
 
 // ─── Touch Screen (I2C) ────────────────────────────────────────────────────
-#define TOUCH_IICSDA           15
-#define TOUCH_IICSCL           10
+// Touch controller lives on the SHARED I2C bus (see I2C_SDA/I2C_SCL below).
+// GPIO 15/10 are exposed externally on the Qwiic connector too.
+#define TOUCH_IICSDA           15   // == I2C_SDA (shared)
+#define TOUCH_IICSCL           10   // == I2C_SCL (shared)
 #define TOUCH_INT              11
 #define TOUCH_RES              16
 
@@ -73,32 +75,39 @@
 // ─── Ambient Light Sensor (Analog) ─────────────────────────────────────────
 // Analog light sensor (e.g. LDR voltage divider or phototransistor) for
 // automatic display brightness adjustment.
-//   Sensor output → GPIO5 (ADC1_CH4)
+//   Sensor output → GPIO9 (ADC1_CH8)
 //   Bright = high ADC value, Dark = low ADC value
 //   (Invert in software if your sensor wiring is opposite)
-#define LIGHT_SENSOR_PIN       5   // GPIO5 = ADC1_CH4
-#define LIGHT_SENSOR_CHANNEL   ADC_CHANNEL_4
+#define LIGHT_SENSOR_PIN       9   // GPIO9 = ADC1_CH8
+#define LIGHT_SENSOR_CHANNEL   ADC_CHANNEL_8
 
-// ─── AK4493 DAC (SPI Control) ──────────────────────────────────────────────
-// Uses HSPI (SPI3) — separate from display QSPI (SPI2)
-#define AK4493_SPI_HOST        SPI3_HOST
-#define AK4493_SPI_SCK         39
-#define AK4493_SPI_MOSI        40
-#define AK4493_SPI_MISO        41  // SDO from AK4493 for register readback
-#define AK4493_SPI_CS          42
-#define AK4493_PDN             -1  // connect to power-down pin if used, -1 = not connected
-#define AK4493_SPI_FREQ        1000000  // 1 MHz SPI clock for AK4493
+// ─── Shared I2C Bus (internal touch + external Qwiic) ─────────────────────
+// VERIFIED by on-board I2C scanner: the Qwiic connector and the internal
+// capacitive-touch controller share the SAME I2C bus on GPIO 15/10.
+// Bootup scan confirmed responders:
+//   0x3B  — AXS15231B touch controller (on-board)
+//   0x68  — DS3231 RTC                 (external, via Qwiic)
+//   0x6A  — DS3231 temperature alias / AT24C32 EEPROM (on same breakout)
+//
+// Therefore ONE TwoWire instance (`Wire`) is used for everything: touch,
+// RTC, AK4493 DAC, and anything else plugged into Qwiic.
+#define I2C_SDA                15   // shared SDA
+#define I2C_SCL                10   // shared SCL
+#define I2C_FREQ               400000  // 400 kHz
 
-// DAC Control Pins
-#define DAC_RESET_PIN          38  // DAC hardware reset (active low)
-#define AMP_MUTE_RELAY_PIN     37  // MOSFET gate for amplifier power/mute relay
+// ─── AK4493 DAC (I2C Control, I2S Audio from external master) ──────────────
+// Control interface: I2C on shared Qwiic bus (see I2C_SDA/I2C_SCL above).
+// I2C address is set by CAD0/CAD1 strap pins on the AK4493 (typical: 0x10 or 0x11).
+// Audio data: I2S lines are driven by EXTERNAL master (Amanero USB-I2S board),
+// ESP32 does NOT generate I2S — it only reads analog audio via ADC pins 3 and 4.
+#define AK4493_I2C_ADDR        0x10  // Adjust if your CAD strap pins differ
+#define DAC_RESET_PIN          5     // DAC hardware reset (active LOW, new pin)
+#define AMP_MUTE_RELAY_PIN     37    // MOSFET gate for amplifier power/mute relay
 
 // ─── RTC DS3231 (I2C) ──────────────────────────────────────────────────────
-// Uses dedicated I2C bus (I2C1) to avoid conflicts
-// For DS3231: Standard I2C address 0x68
-#define RTC_I2C_SDA            6   // GPIO6 - safe, not used by other peripherals
-#define RTC_I2C_SCL            7   // GPIO7 - safe, not used by other peripherals
-#define RTC_I2C_FREQ           400000  // 400kHz I2C clock
+// Shares the main Qwiic I2C bus with the DAC (SDA=18, SCL=17).
+// DS3231 standard I2C address: 0x68.
+#define RTC_I2C_FREQ           I2C_FREQ
 
 // ─── Display Dimensions ────────────────────────────────────────────────────
 #define SCREEN_WIDTH           640
